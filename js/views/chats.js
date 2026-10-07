@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { cityParam, cityTag, store } from '../store.js';
+import { allow, cityParam, cityTag, store } from '../store.js';
 import { el, formatDateTime, initials, openForm, toast } from '../ui.js';
 
 const channelLabel = (channel) => [channel.name, channel.phone].filter(Boolean).join(' · ');
@@ -85,13 +85,14 @@ export async function renderChats(root, params = {}) {
             ]),
           ]))
         : [el('div', { class: 'empty', text: 'Сообщений нет' })]),
-      el('div', { class: 'chat-form' }, [
+      // Отвечать клиенту может тот, у кого есть право правки в imBox.
+      allow('chats', 'edit', el('div', { class: 'chat-form' }, [
         input,
         el('div', { style: 'display:grid;gap:6px' }, [
           el('button', { class: 'btn', onclick: send }, 'Отправить'),
           el('button', { class: 'btn secondary', onclick: draft, title: 'Черновик ответа от AI-помощника' }, 'AI-ответ'),
         ]),
-      ]),
+      ])),
     );
 
     // Прокручиваем переписку к последнему сообщению.
@@ -145,7 +146,7 @@ export async function renderChats(root, params = {}) {
         store.isAdmin()
           ? el('button', { class: 'btn secondary', onclick: () => { location.hash = '#/settings'; } }, 'Номера WhatsApp')
           : null,
-        el('button', { class: 'btn', onclick: newChat }, '+ ПЕРЕПИСКА'),
+        allow('chats', 'edit', el('button', { class: 'btn', onclick: newChat }, '+ ПЕРЕПИСКА')),
       ]),
     ]),
     el('div', { class: 'content' }, [el('div', { class: 'chat-layout' }, [list, pane])]),

@@ -432,6 +432,10 @@ tfoot td { font-weight: 600; }
   .chat-form { grid-template-columns: 1fr; }
 }
 
+/* Редактор роли: раздел — уровень — охват */
+.role-matrix select { min-width: 190px; }
+.role-matrix td { vertical-align: middle; }
+
 
 /* Демо-витрина живёт внутри страницы, поэтому высота считается от неё, а не от окна. */
 html, body { height: 100%; }
@@ -469,7 +473,7 @@ body { margin: 0; }
 <div id="modal-root"></div>
 <div id="toast-root" class="toasts"></div>
 <div class="demo-note">
-  <b>Демо-версия.</b> Изменения живут до перезагрузки страницы.
+  <b>Демо-версия.</b> Изменения сохраняются при смене сотрудника и сбрасываются при обновлении страницы.
   <label>Смотреть как: <select id="demo-view-as" aria-label="Смотреть CRM глазами сотрудника"></select></label>
 </div>
 

@@ -1,7 +1,7 @@
 import { api } from '../api.js';
 import { chartLegend, stackedColumns } from '../chart.js';
 import { currentPipeline, pipelineList } from '../pipelines.js';
-import { cityParam, cityTag, store } from '../store.js';
+import { allow, cityParam, cityTag, store } from '../store.js';
 import {
   confirmDialog, el, formatDateTime, formatMoney, formatNumber, openForm, seriesColor, toast,
 } from '../ui.js';
@@ -60,7 +60,7 @@ export async function renderAnalytics(root) {
     { key: 'calls', label: 'Звонки' },
     { key: 'goals', label: 'Цели' },
     { key: 'events', label: 'Список событий' },
-  ];
+  ].filter((tab) => tab.key !== 'calls' || store.can('calls')); // звонки — отдельный раздел прав
 
   const fromInput = el('input', { type: 'date', value: state.from });
   const toInput = el('input', { type: 'date', value: state.to });
@@ -175,10 +175,11 @@ export async function renderAnalytics(root) {
         el('span', { class: 'muted', style: 'font-weight:400', text: 'хэштеги можно добавлять и удалять' }),
       ]),
       el('div', { class: 'card-body', style: 'display:grid;gap:12px' }, [
-        el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;align-items:center' }, [
+        // Хэштеги заводит тот, кто правит сделки, удаляет — у кого полный доступ к ним.
+        allow('deals', 'edit', el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;align-items:center' }, [
           el('span', { class: 'muted', text: '#' }), nameInput, titleInput,
           el('button', { class: 'btn', onclick: addTag }, 'Добавить'),
-        ]),
+        ])),
         tags.length
           ? el('div', { class: 'table-wrap' }, el('table', {}, [
               el('thead', {}, [el('tr', {}, ['Хэштег', 'Описание', 'Заявок', ''].map((title, index) =>
@@ -191,8 +192,8 @@ export async function renderAnalytics(root) {
                 el('td', { class: 'muted', text: tag.title ?? '—' }),
                 el('td', { class: 'num', text: formatNumber(tag.leads_count) }),
                 el('td', { class: 'actions' }, [
-                  el('button', { class: 'btn ghost', title: 'Изменить', onclick: () => editTag(tag) }, '✎'),
-                  el('button', { class: 'btn ghost', title: 'Удалить', onclick: () => removeTag(tag) }, '🗑'),
+                  allow('deals', 'edit', el('button', { class: 'btn ghost', title: 'Изменить', onclick: () => editTag(tag) }, '✎')),
+                  allow('deals', 'full', el('button', { class: 'btn ghost', title: 'Удалить', onclick: () => removeTag(tag) }, '🗑')),
                 ]),
               ]))),
             ]))

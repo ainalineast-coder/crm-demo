@@ -16,22 +16,23 @@ import { renderTasks } from './views/tasks.js';
 const appRoot = document.getElementById('app');
 
 // Разделы — как в левом меню amoCRM.
-// byCity — раздел показывает данные по городам (у администратора есть переключатель);
-// adminOnly — раздел видит только администратор.
+// byCity — раздел показывает данные по городам (кому видны все города, есть переключатель);
+// section — раздел роли доступа: без доступа пункт меню скрыт; adminOnly — только администратор.
 const NAV = [
   { path: '#/dashboard', icon: '🏠', label: 'Рабочий стол', render: renderDashboard, byCity: true },
-  { path: '#/deals', icon: '🗂', label: 'Сделки', render: renderDeals, byCity: true },
-  { path: '#/chats', icon: '💬', label: 'imBox', render: renderChats, byCity: true },
-  { path: '#/tasks', icon: '✔️', label: 'Задачи', render: renderTasks, byCity: true },
-  { path: '#/contacts', icon: '👤', label: 'Контакты', render: renderContacts, byCity: true },
-  { path: '#/companies', icon: '🏢', label: 'Компании', render: renderCompanies, byCity: true },
-  { path: '#/products', icon: '📦', label: 'Товары', render: renderProducts },
-  { path: '#/emails', icon: '✉️', label: 'Почта', render: renderEmails, byCity: true },
-  { path: '#/analytics', icon: '📈', label: 'Аналитика', render: renderAnalytics, byCity: true },
+  { path: '#/deals', icon: '🗂', label: 'Сделки', render: renderDeals, byCity: true, section: 'deals' },
+  { path: '#/chats', icon: '💬', label: 'imBox', render: renderChats, byCity: true, section: 'chats' },
+  { path: '#/tasks', icon: '✔️', label: 'Задачи', render: renderTasks, byCity: true, section: 'tasks' },
+  { path: '#/contacts', icon: '👤', label: 'Контакты', render: renderContacts, byCity: true, section: 'contacts' },
+  { path: '#/companies', icon: '🏢', label: 'Компании', render: renderCompanies, byCity: true, section: 'companies' },
+  { path: '#/products', icon: '📦', label: 'Товары', render: renderProducts, section: 'products' },
+  { path: '#/emails', icon: '✉️', label: 'Почта', render: renderEmails, byCity: true, section: 'emails' },
+  { path: '#/analytics', icon: '📈', label: 'Аналитика', render: renderAnalytics, byCity: true, section: 'analytics' },
   { path: '#/settings', icon: '⚙️', label: 'Настройки', render: renderSettings, adminOnly: true },
 ];
 
-const navItems = () => NAV.filter((item) => !item.adminOnly || store.isAdmin());
+const navItems = () => NAV.filter((item) =>
+  (!item.adminOnly || store.isAdmin()) && (!item.section || store.can(item.section)));
 
 function parseHash() {
   const [section = 'dashboard', id] = location.hash.replace(/^#\/?/, '').split('/');
@@ -61,7 +62,7 @@ function renderShell() {
       el('div', { class: 'logo', text: 'CRM' }),
       nav,
       el('div', { class: 'spacer' }),
-      el('div', { class: 'me' }, [
+      el('div', { class: 'me', title: store.user.role_name ?? '' }, [
         el('div', { class: 'avatar', text: initials(store.user.name) }),
         el('div', {}, [
           store.user.name.split(' ')[0],
@@ -117,7 +118,7 @@ async function route() {
   const current = ++navigationId;
   const { section, id } = parseHash();
   const item = navItems().find((entry) => entry.path === `#/${section}`) ?? NAV[0];
-  await drawCityBar(shell.cityBar, store.isAdmin() && item.byCity);
+  await drawCityBar(shell.cityBar, store.seesAllCities() && item.byCity);
 
   for (const link of shell.nav.querySelectorAll('a')) {
     link.classList.toggle('active', link.dataset.path === item.path);

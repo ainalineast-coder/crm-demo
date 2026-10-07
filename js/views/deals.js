@@ -3,7 +3,7 @@ import {
   LEAD_TYPE_LABELS, currentPipeline, findStage, loadPipelines, pipelineList,
   setCurrentPipeline, stageOptions, stagesOf,
 } from '../pipelines.js';
-import { cityParam, cityTag, store } from '../store.js';
+import { allow, cityParam, cityTag, store } from '../store.js';
 import {
   ACTIVITY_LABELS, confirmDialog, el, formatDate, formatDateTime, formatMoney,
   initials, openForm, openPanel, seriesColor, tagChip, toast,
@@ -154,11 +154,11 @@ function itemsBlock(dealId, onChange) {
         ? items.map((item) => el('div', { style: 'display:flex;gap:8px;align-items:center' }, [
             el('span', { style: 'flex:1', text: `${item.name} × ${item.quantity}` }),
             el('span', { class: 'muted', text: formatMoney(item.amount) }),
-            el('button', { class: 'btn ghost', title: 'Убрать', onclick: async () => {
+            allow('deals', 'edit', el('button', { class: 'btn ghost', title: 'Убрать', onclick: async () => {
               const result = await api.delete(`/api/deals/${dealId}/items/${item.id}`);
               draw(result.items);
               await onChange?.();
-            } }, '✕'),
+            } }, '✕')),
           ]))
         : [el('div', { class: 'muted', text: 'Товары не добавлены' })]),
     );
@@ -192,7 +192,7 @@ function itemsBlock(dealId, onChange) {
 
   return {
     node: box,
-    addButton: el('button', { class: 'btn secondary', onclick: add }, '+ Товар'),
+    addButton: allow('deals', 'edit', el('button', { class: 'btn secondary', onclick: add }, '+ Товар')),
   };
 }
 
@@ -219,11 +219,11 @@ function filesBlock(dealId) {
               text: file.name,
             }),
             el('span', { class: 'muted', text: `${Math.max(1, Math.round(file.size / 1024))} КБ` }),
-            el('button', { class: 'btn ghost', onclick: async () => {
+            allow('deals', 'full', el('button', { class: 'btn ghost', onclick: async () => {
               if (!await confirmDialog(`Удалить файл «${file.name}»?`)) return;
               await api.delete(`/api/files/${file.id}`);
               draw((await api.get('/api/files', { dealId })).items);
-            } }, '✕'),
+            } }, '✕')),
           ]))
         : [el('div', { class: 'muted', text: 'Файлов нет' })]),
       input,
@@ -249,7 +249,7 @@ function filesBlock(dealId) {
 
   return {
     node: box,
-    addButton: el('button', { class: 'btn secondary', onclick: () => input.click() }, '+ Файл'),
+    addButton: allow('deals', 'edit', el('button', { class: 'btn secondary', onclick: () => input.click() }, '+ Файл')),
   };
 }
 
@@ -296,7 +296,8 @@ export async function openDealDetails(id, onDone) {
     el('div', {}, value ?? '—'),
   ]);
 
-  const stageSelect = el('select', {}, stagesOf(deal.pipeline_id).map((stage) =>
+  // Без права правки этап только показывается.
+  const stageSelect = el('select', { disabled: !store.can('deals', 'edit') }, stagesOf(deal.pipeline_id).map((stage) =>
     el('option', { value: stage.id, selected: stage.id === deal.stage_id }, stage.name)));
   stageSelect.addEventListener('change', async () => {
     try {
@@ -354,13 +355,13 @@ export async function openDealDetails(id, onDone) {
       ]),
       el('div', {}, [
         el('div', { class: 'section-title', text: 'История' }),
-        el('div', { style: 'display:flex;gap:8px;margin-bottom:12px' }, [typeSelect, noteInput,
-          el('button', { class: 'btn', onclick: addNote }, 'Добавить')]),
+        allow('deals', 'edit', el('div', { style: 'display:flex;gap:8px;margin-bottom:12px' }, [typeSelect, noteInput,
+          el('button', { class: 'btn', onclick: addNote }, 'Добавить')])),
         timeline,
       ]),
     ]),
     actions: [
-      el('button', { class: 'btn secondary', title: 'Записать звонок по сделке', onclick: () => openForm({
+      allow('calls', 'edit', el('button', { class: 'btn secondary', title: 'Записать звонок по сделке', onclick: () => openForm({
         title: 'Записать звонок',
         fields: [
           { name: 'direction', label: 'Направление', type: 'select', value: 'out',
@@ -381,8 +382,8 @@ export async function openDealDetails(id, onDone) {
           renderTimeline((await api.get(`/api/deals/${deal.id}`)).activities);
           await onDone?.();
         },
-      }) }, '☎ Звонок'),
-      el('button', { class: 'btn secondary', title: 'Сводка и следующий шаг от AI-помощника', onclick: async (event) => {
+      }) }, '☎ Звонок')),
+      allow('deals', 'edit', el('button', { class: 'btn secondary', title: 'Сводка и следующий шаг от AI-помощника', onclick: async (event) => {
         const button = event.target;
         button.disabled = true;
         try {
@@ -398,16 +399,16 @@ export async function openDealDetails(id, onDone) {
         } finally {
           button.disabled = false;
         }
-      } }, '✨ Сводка AI'),
-      el('button', { class: 'btn danger', onclick: async () => {
+      } }, '✨ Сводка AI')),
+      allow('deals', 'full', el('button', { class: 'btn danger', onclick: async () => {
         if (!await confirmDialog('Удалить сделку вместе с её задачами и историей?')) return;
         await api.delete(`/api/deals/${deal.id}`);
         toast('Сделка удалена');
         panel.close();
         await onDone?.();
-      } }, 'Удалить'),
-      el('button', { class: 'btn secondary', onclick: () => { panel.close(); openDealForm(deal, onDone); } }, 'Редактировать'),
-    ],
+      } }, 'Удалить')),
+      allow('deals', 'edit', el('button', { class: 'btn secondary', onclick: () => { panel.close(); openDealForm(deal, onDone); } }, 'Редактировать')),
+    ].filter(Boolean),
   });
 }
 
@@ -580,7 +581,7 @@ export async function renderDeals(root, params = {}) {
         store.isAdmin()
           ? el('button', { class: 'btn secondary', title: 'Добавить воронку', onclick: () => openPipelineForm(refresh) }, '+ ВОРОНКА')
           : null,
-        el('button', { class: 'btn', onclick: () => openDealForm(null, reload, currentPipeline()?.id) }, '+ НОВАЯ СДЕЛКА'),
+        allow('deals', 'edit', el('button', { class: 'btn', onclick: () => openDealForm(null, reload, currentPipeline()?.id) }, '+ НОВАЯ СДЕЛКА')),
       ]),
     ]),
     el('div', { class: 'content' }, [board]),
@@ -630,7 +631,8 @@ function renderCard(deal, reload) {
 
   const card = el('div', {
     class: 'deal-card',
-    draggable: 'true',
+    // Перетаскивать по этапам может только тот, кто правит сделки.
+    draggable: store.can('deals', 'edit') ? 'true' : 'false',
     onclick: () => openDealDetails(deal.id, reload),
   }, [
     el('div', { class: 'title', text: deal.title }),

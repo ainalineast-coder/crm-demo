@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { cityParam, cityTag, store } from '../store.js';
+import { allow, cityParam, cityTag, store } from '../store.js';
 import { PRIORITY_LABELS, confirmDialog, el, formatDate, initials, isOverdue, openForm, toast } from '../ui.js';
 
 const DAY = 86_400_000;
@@ -72,14 +72,14 @@ export async function renderTasks(root) {
   };
 
   const taskCard = (task) => {
-    const checkbox = el('input', { type: 'checkbox', style: 'width:auto', checked: !!task.done });
+    const checkbox = el('input', { type: 'checkbox', style: 'width:auto', checked: !!task.done, disabled: !store.can('tasks', 'edit') });
     checkbox.addEventListener('change', () => toggleTask(task));
 
     return el('div', { class: 'task-card' }, [
       el('div', { style: 'display:flex;gap:8px;align-items:flex-start' }, [
         checkbox,
         el('div', { style: 'flex:1;min-width:0' }, [
-          el('div', { class: 'title', onclick: () => openTaskForm(task, reload), text: task.title }),
+          el('div', { class: 'title', onclick: () => store.can('tasks', 'edit') && openTaskForm(task, reload), text: task.title }),
           task.deal_title ? el('div', { class: 'who', text: task.deal_title }) : null,
           cityTag(task),
         ]),
@@ -117,7 +117,7 @@ export async function renderTasks(root) {
     listWrap.replaceChildren(el('div', { class: 'table-wrap' }, el('table', {}, [
       el('thead', {}, [el('tr', {}, ['', 'Задача', 'Срок', 'Приоритет', 'Исполнитель', ''].map((title) => el('th', { text: title })))]),
       el('tbody', {}, tasks.length ? tasks.map((task) => {
-        const checkbox = el('input', { type: 'checkbox', style: 'width:auto', checked: !!task.done });
+        const checkbox = el('input', { type: 'checkbox', style: 'width:auto', checked: !!task.done, disabled: !store.can('tasks', 'edit') });
         checkbox.addEventListener('change', () => toggleTask(task));
         return el('tr', { class: task.done ? 'muted' : '' }, [
           el('td', { style: 'width:36px' }, checkbox),
@@ -129,8 +129,8 @@ export async function renderTasks(root) {
           el('td', {}, el('span', { class: `badge prio-${task.priority}` }, PRIORITY_LABELS[task.priority])),
           el('td', {}, [task.assignee_name ?? '—', cityTag(task)]),
           el('td', { class: 'actions' }, [
-            el('button', { class: 'btn ghost', onclick: () => openTaskForm(task, reload) }, '✎'),
-            el('button', { class: 'btn ghost', onclick: () => removeTask(task) }, '🗑'),
+            allow('tasks', 'edit', el('button', { class: 'btn ghost', onclick: () => openTaskForm(task, reload) }, '✎')),
+            allow('tasks', 'full', el('button', { class: 'btn ghost', onclick: () => removeTask(task) }, '🗑')),
           ]),
         ]);
       }) : [el('tr', {}, [el('td', { colspan: '6' }, el('div', { class: 'empty', text: 'Задач нет' }))])]),
@@ -201,7 +201,7 @@ export async function renderTasks(root) {
       ]),
       el('div', { class: 'toolbar' }, [
         viewToggle, search, assigneeSelect,
-        el('button', { class: 'btn', onclick: () => openTaskForm(null, reload) }, '+ ДОБАВИТЬ ЗАДАЧУ'),
+        allow('tasks', 'edit', el('button', { class: 'btn', onclick: () => openTaskForm(null, reload) }, '+ ДОБАВИТЬ ЗАДАЧУ')),
       ]),
     ]),
     el('div', { class: 'content' }, [board, listWrap]),

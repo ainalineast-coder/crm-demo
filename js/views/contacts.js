@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { cityParam, cityTag, store } from '../store.js';
+import { allow, cityParam, cityTag, store } from '../store.js';
 import { confirmDialog, contactName, el, openForm, toast } from '../ui.js';
 
 const fields = (options, contact = {}) => [
@@ -50,14 +50,14 @@ export async function renderContacts(root) {
         el('td', {}, contact.phone ? el('a', { href: `tel:${contact.phone.replace(/\s/g, '')}` }, contact.phone) : '—'),
         el('td', {}, [contact.owner_name ?? '—', cityTag(contact)]),
         el('td', { class: 'actions' }, [
-          el('button', { class: 'btn ghost', onclick: () => openContactForm(contact, reload) }, '✎'),
-          el('button', { class: 'btn ghost', onclick: async () => {
+          allow('contacts', 'edit', el('button', { class: 'btn ghost', onclick: () => openContactForm(contact, reload) }, '✎')),
+          allow('contacts', 'full', el('button', { class: 'btn ghost', onclick: async () => {
             if (!await confirmDialog(`Удалить контакт «${contactName(contact)}»?`)) return;
             await api.delete(`/api/contacts/${contact.id}`);
             store.invalidate('contacts');
             toast('Контакт удалён');
             await reload();
-          } }, '🗑'),
+          } }, '🗑')),
         ]),
       ]))
       : [el('tr', {}, [el('td', { colspan: '6' }, el('div', { class: 'empty', text: 'Контактов не найдено' }))])]));
@@ -75,7 +75,7 @@ export async function renderContacts(root) {
     el('div', { class: 'topbar' }, [
       el('h1', { text: 'Контакты' }),
       el('div', { class: 'toolbar' }, [counter, companyFilter, search,
-        el('button', { class: 'btn', onclick: () => openContactForm(null, reload) }, '+ Контакт')]),
+        allow('contacts', 'edit', el('button', { class: 'btn', onclick: () => openContactForm(null, reload) }, '+ Контакт'))]),
     ]),
     el('div', { class: 'content' }, [el('div', { class: 'card' }, [
       el('div', { class: 'table-wrap' }, el('table', {}, [

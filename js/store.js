@@ -5,6 +5,7 @@ import { contactName, el } from './ui.js';
 const cache = { users: null, companies: null, contacts: null, tags: null, cities: null };
 
 const CITY_KEY = 'crm.cityId';
+const LEVELS = ['none', 'read', 'edit', 'full'];
 const readCity = () => {
   try { return localStorage.getItem(CITY_KEY) ?? ''; } catch { return ''; }
 };
@@ -16,6 +17,23 @@ export const store = {
 
   isAdmin() {
     return this.user?.role === 'admin';
+  },
+
+  /**
+   * Права из роли доступа: can('deals', 'edit') — может ли править сделки.
+   * Кнопки по ним прячутся, но решает всё равно сервер.
+   */
+  can(section, need = 'read') {
+    if (this.isAdmin()) return true;
+    const level = this.user?.permissions?.[section]?.level ?? 'none';
+    return LEVELS.indexOf(level) >= LEVELS.indexOf(need);
+  },
+
+  /** Видны ли записи других городов — тогда нужен переключатель городов. */
+  seesAllCities() {
+    if (this.isAdmin()) return true;
+    return Object.entries(this.user?.permissions ?? {})
+      .some(([section, access]) => section !== 'products' && access.level !== 'none' && access.scope === 'all');
   },
 
   setCity(cityId) {
@@ -70,10 +88,13 @@ export const store = {
   },
 };
 
-/** cityId для запросов: только у администратора и только если город выбран. */
-export const cityParam = () => (store.isAdmin() && store.cityId ? store.cityId : undefined);
+/** cityId для запросов: только у того, кому видны все города, и только если город выбран. */
+export const cityParam = () => (store.seesAllCities() && store.cityId ? store.cityId : undefined);
+
+/** Кнопка или поле — только если хватает прав, иначе ничего. */
+export const allow = (section, need, node) => (store.can(section, need) ? node : null);
 
 /** Подпись города у записи — нужна администратору, когда он смотрит все города сразу. */
-export const cityTag = (row) => (store.isAdmin() && !store.cityId && row?.city_name
+export const cityTag = (row) => (store.seesAllCities() && !store.cityId && row?.city_name
   ? el('div', { class: 'city-tag', text: `📍 ${row.city_name}` })
   : null);

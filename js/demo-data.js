@@ -3,6 +3,7 @@
  * только живут в памяти браузера. Генерируются детерминированно,
  * чтобы у всех, кто открыл ссылку, картинка была одинаковой.
  */
+import { DEFAULT_ROLES, normalizePermissions } from './permissions.js';
 import { DEFAULT_PIPELINES, buildStages } from './stage-constants.js';
 
 const DAY = 86_400_000;
@@ -29,12 +30,22 @@ const CITIES = [
   { id: 3, name: 'Алматы', phoneCode: '+7 7', whatsapp: '+7 727 350-40-50' },
 ];
 
-// Администратор видит все города; менеджер — только свой.
+// Администратор видит всё; остальным права даёт роль (1 — менеджер города, 2 — стажёр,
+// 3 — руководитель: все города, только просмотр). leads — ведёт демо-заявки.
+// demoLabel — подпись в переключателе «Смотреть как».
 export const USERS = [
-  { id: 1, name: 'Жанна', email: 'admin@crm.local', role: 'admin', city_id: null, active: 1 },
-  { id: 2, name: 'Андрей Лукашевич', email: 'andrey@crm.local', role: 'manager', city_id: 1, active: 1 },
-  { id: 3, name: 'Ольга Тихонова', email: 'olga@crm.local', role: 'manager', city_id: 2, active: 1 },
-  { id: 4, name: 'Пётр Ковалёв', email: 'petr@crm.local', role: 'manager', city_id: 3, active: 1 },
+  { id: 1, name: 'Жанна', email: 'admin@crm.local', role: 'admin', city_id: null, role_id: null, active: 1,
+    demoLabel: 'владелец, всё во всех городах' },
+  { id: 2, name: 'Андрей Лукашевич', email: 'andrey@crm.local', role: 'manager', city_id: 1, role_id: 1, active: 1,
+    leads: true, demoLabel: 'менеджер, Минск' },
+  { id: 3, name: 'Ольга Тихонова', email: 'olga@crm.local', role: 'manager', city_id: 2, role_id: 1, active: 1,
+    leads: true, demoLabel: 'менеджер, Караганда' },
+  { id: 4, name: 'Пётр Ковалёв', email: 'petr@crm.local', role: 'manager', city_id: 3, role_id: 1, active: 1,
+    leads: true, demoLabel: 'менеджер, Алматы' },
+  { id: 5, name: 'Айгерим Нурланова', email: 'aigerim@crm.local', role: 'manager', city_id: 3, role_id: 2, active: 1,
+    leads: true, demoLabel: 'стажёр, только свои заявки' },
+  { id: 6, name: 'Марат Сейткали', email: 'marat@crm.local', role: 'manager', city_id: 3, role_id: 3, active: 1,
+    demoLabel: 'руководитель, все города, просмотр' },
 ];
 
 const TAGS = [
@@ -151,7 +162,10 @@ export function buildDataset() {
       id: city.id, name: `WhatsApp ${city.name}`, phone: city.whatsapp, city_id: city.id,
       provider: 'none', phone_id: null, api_url: null, has_token: false, active: 1, created_at: stamp(-90, 10),
     })),
-    users: USERS.map((user) => ({ ...user, created_at: stamp(-90, 10) })),
+    roles: DEFAULT_ROLES.map((role, index) => ({
+      id: index + 1, name: role.name, permissions: normalizePermissions(role.permissions), created_at: stamp(-90, 10),
+    })),
+    users: USERS.map(({ leads, demoLabel, ...user }) => ({ ...user, created_at: stamp(-90, 10) })),
     tags: TAGS.map((tag, index) => ({
       id: index + 1, ...tag, active: 1, created_at: stamp(-60, 10),
     })),
@@ -175,7 +189,7 @@ export function buildDataset() {
       company: 1, contact: 1, deal: 1, tag: TAGS.length + 1, task: 1, activity: 1,
       pipeline: 1, stage: 1, product: 1, item: 1, file: 1, call: 1, goal: 1,
       chat: 1, message: 1, email: 1, event: 1, city: CITIES.length + 1, channel: CITIES.length + 1,
-      user: USERS.length + 1,
+      user: USERS.length + 1, role: DEFAULT_ROLES.length + 1,
     },
   };
 
@@ -197,7 +211,7 @@ export function buildDataset() {
     state.stages.find((stage) => stage.pipeline_id === pipelineId && stage.type === type);
 
   // Заявки ведут менеджеры городов; город заявки — город ответственного.
-  const managers = state.users.filter((user) => user.role === 'manager');
+  const managers = state.users.filter((user) => USERS.find((item) => item.id === user.id)?.leads);
   const managerFor = (index) => managers[index % managers.length];
   const ownerFor = (index) => managerFor(index).id;
   const cityFor = (index) => managerFor(index).city_id;

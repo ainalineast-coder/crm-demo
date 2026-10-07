@@ -1,4 +1,5 @@
 import { api } from '../api.js';
+import { allow } from '../store.js';
 import { confirmDialog, el, formatMoney, formatNumber, openForm, toast } from '../ui.js';
 
 const fields = (product = {}) => [
@@ -54,13 +55,13 @@ export async function renderProducts(root) {
       el('td', { class: 'num', text: formatMoney(product.price, product.currency) }),
       el('td', { class: 'num', text: `${formatNumber(product.stock)} ${product.unit ?? ''}` }),
       el('td', { class: 'actions' }, [
-        el('button', { class: 'btn ghost', onclick: () => openProductForm(product, reload) }, '✎'),
-        el('button', { class: 'btn ghost', onclick: async () => {
+        allow('products', 'edit', el('button', { class: 'btn ghost', onclick: () => openProductForm(product, reload) }, '✎')),
+        allow('products', 'full', el('button', { class: 'btn ghost', onclick: async () => {
           if (!await confirmDialog(`Удалить товар «${product.name}»?`)) return;
           await api.delete(`/api/products/${product.id}`);
           toast('Товар удалён');
           await reload();
-        } }, '🗑'),
+        } }, '🗑')),
       ]),
     ])) : [el('tr', {}, [el('td', { colspan: '6' }, el('div', { class: 'empty', text: 'Товаров не найдено' }))])]));
   };
@@ -74,7 +75,7 @@ export async function renderProducts(root) {
       el('div', { style: 'display:flex;align-items:center;gap:12px' }, [el('h1', { text: 'Товары' }), counter]),
       el('div', { class: 'toolbar' }, [
         search, groupSelect,
-        el('button', { class: 'btn', onclick: () => openProductForm(null, reload) }, '+ ДОБАВИТЬ ТОВАР'),
+        allow('products', 'edit', el('button', { class: 'btn', onclick: () => openProductForm(null, reload) }, '+ ДОБАВИТЬ ТОВАР')),
       ]),
     ]),
     el('div', { class: 'content' }, [el('div', { class: 'card' }, [

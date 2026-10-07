@@ -4,6 +4,10 @@
  * Экраны приложения используют этот модуль вместо public/js/api.js.
  */
 import { USERS, buildDataset } from './demo-data.js';
+// Права и подписи — из того же файла, что и на сервере (src/lib/permissions.js).
+import {
+  ADMIN_PERMISSIONS, LEVELS, LEVEL_LABELS, SCOPES, SCOPE_LABELS, SECTIONS, normalizePermissions,
+} from './permissions.js';
 // Константы берём из того же файла, что и сервер (src/lib/pipelines.js).
 import { CURRENCIES, LEAD_TYPES, STAGE_COLORS, buildStages, normalizeTag } from './stage-constants.js';
 
@@ -17,7 +21,20 @@ export class ApiError extends Error {
 
 export const setUnauthorizedHandler = () => {};
 
-const db = buildDataset();
+// При переключении «Смотреть как» данные демо переносятся через перезагрузку,
+// чтобы можно было поменять права роли и сразу увидеть CRM глазами сотрудника.
+// Обычное обновление страницы возвращает исходные демо-данные.
+const DEMO_DB_KEY = 'crm.demoDb';
+const restoreDb = () => {
+  try {
+    const saved = sessionStorage.getItem(DEMO_DB_KEY);
+    sessionStorage.removeItem(DEMO_DB_KEY);
+    return saved ? JSON.parse(saved) : null;
+  } catch {
+    return null;
+  }
+};
+const db = restoreDb() ?? buildDataset();
 const DEMO_USER = db.users[0];
 
 // Демо открывается уже авторизованным. Переключатель «Смотреть как» на странице
@@ -37,15 +54,14 @@ let session = savedUser() ?? DEMO_USER;
 export const demoAccounts = () => USERS.map((user) => ({
   email: user.email,
   current: user.email === session?.email,
-  label: user.role === 'admin'
-    ? `${user.name.split(' ')[0]} — владелец, все города`
-    : `${user.name.split(' ')[0]} — менеджер, ${db.cities.find((city) => city.id === user.city_id)?.name ?? 'без города'}`,
+  label: `${user.name.split(' ')[0]} — ${user.demoLabel}`,
 }));
 
 /** Перезагружает демо от имени другого сотрудника (данные демо при этом сбрасываются). */
 export function viewAs(email) {
   try {
     sessionStorage.setItem(DEMO_USER_KEY, email);
+    sessionStorage.setItem(DEMO_DB_KEY, JSON.stringify(db));
   } catch {
     // Без хранилища выбор не переживёт перезагрузку — входим вручную.
     session = db.users.find((user) => user.email === email) ?? session;
@@ -69,56 +85,145 @@ const percent = (part, total) => (total > 0 ? Math.round((part / total) * 100) :
 const userName = (id) => byId(db.users, id)?.name ?? null;
 const cityName = (id) => byId(db.cities, id)?.name ?? null;
 
-// --- Доступ по городам: те же правила, что на сервере (src/lib/scope.js) ---
+// --- Права доступа: те же правила, что на сервере (src/lib/scope.js) ---
 const isAdmin = () => session?.role === 'admin';
-const canSee = (row) => Boolean(row) && (isAdmin() || (row.city_id ?? null) === (session?.city_id ?? null));
-/** Фильтр списка: менеджер — свой город, администратор — все или выбранный (cityId). */
-const inCity = (params = {}) => (row) => {
-  if (!isAdmin()) return canSee(row);
+const roleOf = (user) => (user?.role === 'admin' ? null : byId(db.roles, user?.role_id));
+const permissionsOf = (user) => (user?.role === 'admin'
+  ? ADMIN_PERMISSIONS
+  : normalizePermissions(roleOf(user)?.permissions));
+const access = (section) => permissionsOf(session)[section] ?? { level: 'none', scope: 'own' };
+const can = (section, need = 'read') => LEVELS.indexOf(access(section).level) >= LEVELS.indexOf(need);
+const assertAccess = (section, need = 'read') => {
+  if (can(section, need)) return;
+  const what = need === 'read' ? 'нет доступа' : `нужен уровень «${LEVEL_LABELS[need]}»`;
+  throw new ApiError(403, `Раздел «${SECTIONS[section].label}»: ${what}`);
+};
+
+// «Моя запись» для охвата «Только свои».
+const OWN = {
+  deals: (row) => row.owner_id === session?.id,
+  contacts: (row) => row.owner_id === session?.id,
+  companies: (row) => row.owner_id === session?.id,
+  tasks: (row) => row.assignee_id === session?.id,
+  chats: (row) => byId(db.deals, row.deal_id)?.owner_id === session?.id
+    || byId(db.contacts, row.contact_id)?.owner_id === session?.id,
+  emails: (row) => row.user_id === session?.id,
+  calls: (row) => row.user_id === session?.id,
+  analytics: (row) => row.owner_id === session?.id,
+};
+const requestedCity = (params = {}) => (row) => {
   if (params.cityId === 'none') return (row.city_id ?? null) === null;
   if (Number(params.cityId) > 0) return row.city_id === Number(params.cityId);
   return true;
 };
-const visible = (table, id, message = 'Не найдено') => {
-  const row = byId(db[table], id);
-  if (!canSee(row)) throw new ApiError(404, message);
+/** Фильтр записей раздела по уровню и охвату роли (и выбранному городу). */
+const inScope = (section, params = {}) => (row) => {
+  if (!row) return false;
+  const { level, scope } = access(section);
+  if (level === 'none') return false;
+  if (scope === 'all' || SECTIONS[section].global) return requestedCity(params)(row);
+  if (scope === 'city') return (row.city_id ?? null) === (session?.city_id ?? null);
+  return OWN[section](row);
+};
+const seesAllCities = () => isAdmin() || Object.entries(permissionsOf(session))
+  .some(([key, item]) => !SECTIONS[key]?.global && item.level !== 'none' && item.scope === 'all');
+/** Сотрудники в списках и отчётах раздела: свои / коллеги города / все. */
+const peopleIn = (section, params = {}) => (user) => {
+  const { level, scope } = access(section);
+  if (level === 'none') return false;
+  if (isAdmin() || scope === 'all') return requestedCity(params)(user);
+  if (scope === 'city') return (user.city_id ?? null) === (session?.city_id ?? null);
+  return user.id === session?.id;
+};
+const usersIn = (params = {}) => (user) => (seesAllCities()
+  ? requestedCity(params)(user)
+  : (user.city_id ?? null) === (session?.city_id ?? null));
+const channelsIn = (params = {}) => (channel) => (isAdmin() || access('chats').scope === 'all'
+  ? requestedCity(params)(channel)
+  : (channel.city_id ?? null) === (session?.city_id ?? null));
+const visible = (section, id, message = 'Не найдено') => {
+  const row = byId(db[section], id);
+  if (!inScope(section)(row)) throw new ApiError(404, message);
   return row;
 };
 const requireAdmin = () => {
   if (!isAdmin()) throw new ApiError(403, 'Недостаточно прав');
 };
-/** Менеджер назначает ответственным только коллег своего города. */
-const assignable = (userId, field = 'owner_id') => {
+/** Ответственный: «все города» — любой, «свой город» — коллега, «только свои» — только сам. */
+const assignable = (section, userId, field = 'owner_id') => {
   const user = byId(db.users, userId);
-  if (!user || (!isAdmin() && (user.city_id ?? null) !== (session?.city_id ?? null))) {
-    throw new ApiError(400, 'Ошибка валидации', { [field]: 'Сотрудник не найден в вашем городе' });
+  const { scope } = access(section);
+  const allowed = user && (isAdmin() || scope === 'all' || user.id === session?.id
+    || (scope === 'city' && (user.city_id ?? null) === (session?.city_id ?? null)));
+  if (!allowed) {
+    throw new ApiError(400, 'Ошибка валидации', {
+      [field]: scope === 'own' ? 'Можно назначить только себя' : 'Сотрудник не найден в вашем городе',
+    });
   }
   return user;
 };
 /** Ссылки на сделку, контакт, компанию: город первой найденной записи. */
 const linkedCity = (body) => {
   let city;
-  for (const [field, table, message] of [['deal_id', 'deals', 'Сделка не найдена'],
+  for (const [field, section, message] of [['deal_id', 'deals', 'Сделка не найдена'],
     ['contact_id', 'contacts', 'Контакт не найден'], ['company_id', 'companies', 'Компания не найдена']]) {
     if (!body?.[field]) continue;
-    const row = visible(table, body[field], message);
+    const row = visible(section, body[field], message);
     if (city === undefined) city = row.city_id ?? null;
   }
   return city;
 };
+const parentSection = (row) => (row.deal_id ? 'deals' : row.contact_id ? 'contacts' : row.company_id ? 'companies' : 'deals');
 const checkCity = (value) => {
   if (value === null || value === undefined || value === '') return null;
   if (!byId(db.cities, value)) throw new ApiError(400, 'Ошибка валидации', { city_id: 'Город не найден' });
   return Number(value);
 };
-/** Город новой записи: менеджер — свой; администратор — указанный, связанной записи или ответственного. */
-const cityForNew = ({ requested, linked, owner } = {}) => {
-  if (!isAdmin()) return session?.city_id ?? null;
+const canMoveCity = (section) => isAdmin() || access(section).scope === 'all';
+/** Город новой записи: при охвате «все города» — указанный, связанной записи или ответственного. */
+const cityForNew = (section, { requested, linked, owner } = {}) => {
+  if (!canMoveCity(section)) return session?.city_id ?? null;
   if (requested !== undefined) return checkCity(requested);
   if (linked !== undefined) return linked;
-  return owner?.city_id ?? null;
+  if (owner?.city_id) return owner.city_id;
+  return isAdmin() ? null : (session?.city_id ?? null);
 };
-const userView = (user) => ({ ...user, city_name: cityName(user.city_id) });
+
+/** Уровень доступа по адресу и методу — проверяется до обработчика, как middleware на сервере. */
+const NEED_BY_METHOD = { GET: 'read', POST: 'edit', PUT: 'edit', PATCH: 'edit', DELETE: 'full' };
+const GUARDS = [
+  [/^\/api\/deals\/\d+\/items/, 'deals', (method) => (method === 'GET' ? 'read' : 'edit')],
+  [/^\/api\/deals/, 'deals'],
+  [/^\/api\/contacts/, 'contacts'],
+  [/^\/api\/companies/, 'companies'],
+  [/^\/api\/tasks/, 'tasks'],
+  [/^\/api\/chats/, 'chats'],
+  [/^\/api\/emails/, 'emails'],
+  [/^\/api\/calls/, 'calls'],
+  [/^\/api\/products/, 'products'],
+  [/^\/api\/(reports|events|goals)/, 'analytics', () => 'read'],
+  [/^\/api\/tags/, 'deals', (method) => (method === 'GET' ? null : NEED_BY_METHOD[method])],
+  [/^\/api\/ai\/deals/, 'deals', () => 'edit'],
+  [/^\/api\/ai\/chats/, 'chats', () => 'read'],
+];
+function guard(method, path) {
+  const rule = GUARDS.find(([pattern]) => pattern.test(path));
+  if (!rule || !session) return;
+  const need = rule[2] ? rule[2](method) : NEED_BY_METHOD[method];
+  if (need) assertAccess(rule[1], need);
+}
+const roleView = (role) => ({
+  ...role,
+  permissions: normalizePermissions(role.permissions),
+  users_count: db.users.filter((user) => user.role === 'manager' && user.role_id === role.id).length,
+});
+const userView = (user) => ({
+  ...user,
+  city_name: cityName(user.city_id),
+  role_id: user.role === 'admin' ? null : (user.role_id ?? null),
+  role_name: user.role === 'admin' ? 'Администратор' : (roleOf(user)?.name ?? 'Роль не назначена'),
+  permissions: permissionsOf(user),
+});
 const channelStatus = (channel) => (channel.active
   ? { provider: 'demo', ready: false, missing: ['демо-режим: сообщения не уходят наружу'] }
   : { provider: channel.provider, ready: false, missing: ['номер отключён'] });
@@ -276,7 +381,7 @@ function logEvent(event) {
 
 const tagView = (tag) => ({
   ...tag,
-  leads_count: db.dealTags.filter((link) => link.tag_id === tag.id && canSee(byId(db.deals, link.deal_id))).length,
+  leads_count: db.dealTags.filter((link) => link.tag_id === tag.id && inScope('deals')(byId(db.deals, link.deal_id))).length,
 });
 
 const parseTagIds = (params) => String(params.tagIds ?? '')
@@ -284,9 +389,9 @@ const parseTagIds = (params) => String(params.tagIds ?? '')
   .map((value) => Number(value.trim()))
   .filter((value) => Number.isInteger(value) && value > 0);
 
-function filterDeals(params) {
+function filterDeals(params, section = 'deals') {
   const tagIds = parseTagIds(params);
-  const city = inCity(params);
+  const city = inScope(section, params);
   return db.deals.filter((deal) => {
     if (!city(deal)) return false;
     if (params.pipelineId && deal.pipeline_id !== Number(params.pipelineId)) return false;
@@ -319,7 +424,8 @@ function campaignsReport(params) {
   let from = isDate(params.from) ? params.from : toISO(new Date(Date.now() - 29 * DAY));
   if (from > to) [from, to] = [to, from];
 
-  const deals = filterDeals({ ...params, from, to });
+  // Отчёты считаются в охвате раздела «Аналитика».
+  const deals = filterDeals({ ...params, from, to }, 'analytics');
   const measure = (list) => ({
     leads: list.length,
     won: list.filter((deal) => stageType(deal) === 'won').length,
@@ -414,16 +520,18 @@ const ROUTES = [
   ['POST', /^\/api\/auth\/logout$/, () => { session = null; return null; }],
 
   ['GET', /^\/api\/users$/, (_m, _b, params) => ({
-    items: db.users.filter(inCity(params)).map(userView).sort((a, b) => a.name.localeCompare(b.name)),
+    items: db.users.filter(usersIn(params)).map(userView).sort((a, b) => a.name.localeCompare(b.name)),
   })],
 
   ['POST', /^\/api\/users$/, (_m, body) => {
     requireAdmin();
     const email = required(body, 'email').toLowerCase();
     if (db.users.some((user) => user.email === email)) throw new ApiError(409, 'Такой email уже есть');
+    const role = body.role === 'admin' ? 'admin' : 'manager';
     const user = {
-      id: db.nextId.user++, name: required(body, 'name'), email,
-      role: body.role === 'admin' ? 'admin' : 'manager', city_id: checkCity(body.city_id),
+      id: db.nextId.user++, name: required(body, 'name'), email, role, city_id: checkCity(body.city_id),
+      // Менеджер без явной роли получает роль по умолчанию — «Менеджер города».
+      role_id: role === 'admin' ? null : (byId(db.roles, body.role_id)?.id ?? db.roles[0]?.id ?? null),
       active: 1, created_at: now(),
     };
     required(body, 'password');
@@ -440,12 +548,58 @@ const ROUTES = [
     }
     for (const field of ['name', 'email', 'role']) if (body[field]) user[field] = body[field];
     if (Object.hasOwn(body, 'city_id')) user.city_id = checkCity(body.city_id);
+    if (Object.hasOwn(body, 'role_id')) {
+      if (body.role_id && !byId(db.roles, body.role_id)) throw new ApiError(400, 'Ошибка валидации', { role_id: 'Роль не найдена' });
+      user.role_id = body.role_id ? Number(body.role_id) : null;
+    }
+    if (user.role === 'manager' && !user.role_id) user.role_id = db.roles[0]?.id ?? null;
     if (Object.hasOwn(body, 'active')) user.active = body.active ? 1 : 0;
     return userView(user);
   }],
 
+  // --- Роли доступа (только администратор) ---
+  ['GET', /^\/api\/roles$/, () => {
+    requireAdmin();
+    return {
+      items: db.roles.map(roleView),
+      sections: Object.entries(SECTIONS).map(([key, section]) => ({
+        key, label: section.label, global: Boolean(section.global), readOnly: Boolean(section.readOnly),
+      })),
+      levels: LEVELS.map((key) => ({ key, label: LEVEL_LABELS[key] })),
+      scopes: SCOPES.map((key) => ({ key, label: SCOPE_LABELS[key] })),
+    };
+  }],
+
+  ['POST', /^\/api\/roles$/, (_m, body) => {
+    requireAdmin();
+    const name = required(body, 'name');
+    if (db.roles.some((role) => role.name.toLowerCase() === name.toLowerCase())) throw new ApiError(409, `Роль «${name}» уже есть`);
+    const role = { id: db.nextId.role++, name, permissions: normalizePermissions(body.permissions), created_at: now() };
+    db.roles.push(role);
+    return roleView(role);
+  }],
+
+  ['PATCH', /^\/api\/roles\/(\d+)$/, (match, body) => {
+    requireAdmin();
+    const role = byId(db.roles, match[1]);
+    if (!role) throw new ApiError(404, 'Роль не найдена');
+    if (body.name) role.name = String(body.name).trim();
+    if (body.permissions) role.permissions = normalizePermissions(body.permissions);
+    return roleView(role);
+  }],
+
+  ['DELETE', /^\/api\/roles\/(\d+)$/, (match) => {
+    requireAdmin();
+    const role = byId(db.roles, match[1]);
+    if (!role) throw new ApiError(404, 'Роль не найдена');
+    const count = db.users.filter((user) => user.role === 'manager' && user.role_id === role.id).length;
+    if (count) throw new ApiError(409, `Роль назначена сотрудникам: ${count} — сначала смените им роль`);
+    db.roles = db.roles.filter((item) => item.id !== role.id);
+    return null;
+  }],
+
   ['GET', /^\/api\/cities$/, () => ({
-    items: db.cities.filter((city) => isAdmin() || city.id === session?.city_id).map((city) => ({
+    items: db.cities.filter((city) => seesAllCities() || city.id === session?.city_id).map((city) => ({
       ...city,
       users_count: db.users.filter((user) => user.city_id === city.id && user.active).length,
       deals_count: db.deals.filter((deal) => deal.city_id === city.id).length,
@@ -485,7 +639,7 @@ const ROUTES = [
   }],
 
   ['GET', /^\/api\/channels$/, (_m, _b, params) => ({
-    items: db.channels.filter(inCity(params)).map(channelView),
+    items: db.channels.filter(channelsIn(params)).map(channelView),
   })],
 
   ['POST', /^\/api\/channels$/, (_m, body) => {
@@ -528,7 +682,7 @@ const ROUTES = [
       ...pipeline,
       stages: stagesOfPipeline(pipeline.id).map((stage) => ({
         ...stage,
-        deals_count: db.deals.filter((deal) => deal.stage_id === stage.id && canSee(deal)).length,
+        deals_count: db.deals.filter((deal) => deal.stage_id === stage.id && inScope('deals')(deal)).length,
       })),
     })),
   })],
@@ -656,8 +810,8 @@ const ROUTES = [
   ['POST', /^\/api\/deals$/, (_m, body) => {
     const title = required(body, 'title');
     if (title.length < 2) throw new ApiError(400, 'Ошибка валидации', { title: 'Минимум 2 символов' });
-    const owner = assignable(body.owner_id ? Number(body.owner_id) : session.id);
-    const cityId = cityForNew({
+    const owner = assignable('deals', body.owner_id ? Number(body.owner_id) : session.id);
+    const cityId = cityForNew('deals', {
       requested: Object.hasOwn(body, 'city_id') ? body.city_id : undefined,
       linked: linkedCity(body),
       owner,
@@ -716,10 +870,10 @@ const ROUTES = [
   ['PATCH', /^\/api\/deals\/(\d+)$/, (match, body) => {
     const deal = visible('deals', match[1], 'Сделка не найдена');
     linkedCity(body);
-    const owner = body.owner_id ? assignable(body.owner_id) : null;
+    const owner = body.owner_id ? assignable('deals', body.owner_id) : null;
     // Город меняет администратор; смена ответственного переносит сделку в его город.
-    if (isAdmin() && Object.hasOwn(body, 'city_id')) deal.city_id = checkCity(body.city_id);
-    else if (isAdmin() && owner?.city_id) deal.city_id = owner.city_id;
+    if (canMoveCity('deals') && Object.hasOwn(body, 'city_id')) deal.city_id = checkCity(body.city_id);
+    else if (canMoveCity('deals') && owner?.city_id) deal.city_id = owner.city_id;
 
     if (Object.hasOwn(body, 'title')) {
       const title = required(body, 'title');
@@ -798,7 +952,7 @@ const ROUTES = [
   }],
 
   ['GET', /^\/api\/contacts$/, (_m, _b, params) => {
-    let items = db.contacts.filter(inCity(params));
+    let items = db.contacts.filter(inScope('contacts', params));
     if (params.companyId) items = items.filter((contact) => contact.company_id === Number(params.companyId));
     if (params.ownerId) items = items.filter((contact) => contact.owner_id === Number(params.ownerId));
     if (params.q) {
@@ -818,11 +972,11 @@ const ROUTES = [
       phone: body.phone ?? null,
       position: body.position ?? null,
       company_id: body.company_id ? Number(body.company_id) : null,
-      owner_id: assignable(body.owner_id ? Number(body.owner_id) : session.id).id,
+      owner_id: assignable('contacts', body.owner_id ? Number(body.owner_id) : session.id).id,
       notes: body.notes ?? null,
       created_at: now(), updated_at: now(),
     };
-    contact.city_id = cityForNew({
+    contact.city_id = cityForNew('contacts', {
       requested: Object.hasOwn(body, 'city_id') ? body.city_id : undefined,
       linked: linkedCity(body),
       owner: byId(db.users, contact.owner_id),
@@ -850,7 +1004,7 @@ const ROUTES = [
   }],
 
   ['GET', /^\/api\/companies$/, (_m, _b, params) => {
-    let items = db.companies.filter(inCity(params));
+    let items = db.companies.filter(inScope('companies', params));
     if (params.q) items = items.filter((company) => [company.name, company.industry, company.phone]
       .some((value) => like(value, params.q)));
     if (params.ownerId) items = items.filter((company) => company.owner_id === Number(params.ownerId));
@@ -862,8 +1016,8 @@ const ROUTES = [
     const company = visible('companies', match[1], 'Компания не найдена');
     return {
       ...companyView(company),
-      contacts: db.contacts.filter((contact) => contact.company_id === company.id && canSee(contact)),
-      deals: db.deals.filter((deal) => deal.company_id === company.id && canSee(deal)),
+      contacts: db.contacts.filter((contact) => contact.company_id === company.id && inScope('contacts')(contact)),
+      deals: db.deals.filter((deal) => deal.company_id === company.id && inScope('deals')(deal)),
     };
   }],
 
@@ -873,10 +1027,10 @@ const ROUTES = [
       name: required(body, 'name'),
       industry: body.industry ?? null, website: body.website ?? null, phone: body.phone ?? null,
       address: body.address ?? null, notes: body.notes ?? null,
-      owner_id: assignable(body.owner_id ? Number(body.owner_id) : session.id).id,
+      owner_id: assignable('companies', body.owner_id ? Number(body.owner_id) : session.id).id,
       created_at: now(), updated_at: now(),
     };
-    company.city_id = cityForNew({
+    company.city_id = cityForNew('companies', {
       requested: Object.hasOwn(body, 'city_id') ? body.city_id : undefined,
       owner: byId(db.users, company.owner_id),
     });
@@ -901,7 +1055,7 @@ const ROUTES = [
   }],
 
   ['GET', /^\/api\/tasks$/, (_m, _b, params) => {
-    let items = db.tasks.filter(inCity(params));
+    let items = db.tasks.filter(inScope('tasks', params));
     if (params.done === 'true') items = items.filter((task) => task.done);
     if (params.done === 'false') items = items.filter((task) => !task.done);
     if (params.overdue === 'true') {
@@ -929,10 +1083,10 @@ const ROUTES = [
       deal_id: body.deal_id ? Number(body.deal_id) : null,
       created_at: now(), updated_at: now(),
     };
-    task.city_id = cityForNew({
+    task.city_id = cityForNew('tasks', {
       requested: Object.hasOwn(body, 'city_id') ? body.city_id : undefined,
       linked: linkedCity(body),
-      owner: assignable(task.assignee_id, 'assignee_id'),
+      owner: assignable('tasks', task.assignee_id, 'assignee_id'),
     });
     db.tasks.push(task);
     return taskView(task);
@@ -982,25 +1136,25 @@ const ROUTES = [
       throw new ApiError(400, 'Укажите, к чему относится запись: компания, контакт или сделка');
     }
     linkedCity(activity);
+    assertAccess(parentSection(activity), 'edit');
     db.activities.push(activity);
     return activityView(activity);
   }],
 
   ['GET', /^\/api\/dashboard$/, (_m, _b, params) => {
-    const city = inCity(params);
-    const deals = db.deals.filter(city);
+    const deals = db.deals.filter(inScope('deals', params));
     const open = deals.filter((deal) => stageType(deal) === 'open');
     const won = deals.filter((deal) => stageType(deal) === 'won');
     const lost = deals.filter((deal) => stageType(deal) === 'lost');
     const today = new Date().toISOString().slice(0, 10);
-    const tasks = db.tasks.filter(city);
+    const tasks = db.tasks.filter(inScope('tasks', params));
     const openTasks = tasks.filter((task) => !task.done);
     const dealIds = new Set(deals.map((deal) => deal.id));
 
     return {
       totals: {
-        companies: db.companies.filter(city).length,
-        contacts: db.contacts.filter(city).length,
+        companies: db.companies.filter(inScope('companies', params)).length,
+        contacts: db.contacts.filter(inScope('contacts', params)).length,
         open_deals: open.length,
         open_amount: open.reduce((sum, deal) => sum + deal.amount, 0),
         won_amount: won.reduce((sum, deal) => sum + deal.amount, 0),
@@ -1109,7 +1263,7 @@ const ROUTES = [
 
   // --- Звонки ---
   ['GET', /^\/api\/calls$/, (_m, _b, params) => {
-    let items = db.calls.filter(inCity(params));
+    let items = db.calls.filter(inScope('calls', params));
     if (params.direction) items = items.filter((call) => call.direction === params.direction);
     if (params.dealId) items = items.filter((call) => call.deal_id === Number(params.dealId));
     if (params.from) items = items.filter((call) => call.created_at.slice(0, 10) >= params.from);
@@ -1121,7 +1275,7 @@ const ROUTES = [
   ['GET', /^\/api\/calls\/report$/, (_m, _b, params) => {
     const to = params.to ?? new Date().toISOString().slice(0, 10);
     const from = params.from ?? new Date(Date.now() - 29 * 86_400_000).toISOString().slice(0, 10);
-    const inRange = db.calls.filter(inCity(params))
+    const inRange = db.calls.filter(inScope('calls', params))
       .filter((call) => call.created_at.slice(0, 10) >= from && call.created_at.slice(0, 10) <= to);
     const measure = (list) => ({
       total: list.length,
@@ -1134,7 +1288,7 @@ const ROUTES = [
     return {
       from, to,
       totals: measure(inRange),
-      byUser: db.users.filter(inCity(params)).map((user) => ({
+      byUser: db.users.filter(peopleIn('calls', params)).map((user) => ({
         id: user.id, name: user.name,
         ...measure(inRange.filter((call) => call.user_id === user.id)),
       })).sort((a, b) => b.total - a.total),
@@ -1155,7 +1309,7 @@ const ROUTES = [
       contact_id: body.contact_id ? Number(body.contact_id) : null,
       created_at: now(),
     };
-    call.city_id = cityForNew({ linked: linkedCity(call), owner: session });
+    call.city_id = cityForNew('calls', { linked: linkedCity(call), owner: session });
     db.calls.push(call);
 
     if (call.deal_id) {
@@ -1176,7 +1330,7 @@ const ROUTES = [
   // --- Цели ---
   ['GET', /^\/api\/goals$/, (_m, _b, params) => {
     const period = /^\d{4}-\d{2}$/.test(String(params.period ?? '')) ? params.period : new Date().toISOString().slice(0, 7);
-    const items = db.users.filter(inCity(params)).map((user) => {
+    const items = db.users.filter(peopleIn('analytics', params)).map((user) => {
       const goal = db.goals.find((item) => item.user_id === user.id && item.period === period);
       const won = db.deals.filter((deal) => deal.owner_id === user.id && stageType(deal) === 'won'
         && (deal.closed_at ?? deal.updated_at).slice(0, 7) === period);
@@ -1222,13 +1376,13 @@ const ROUTES = [
 
   // --- Чаты imBox ---
   ['GET', /^\/api\/chats$/, (_m, _b, params) => {
-    let items = db.chats.filter(inCity(params));
+    let items = db.chats.filter(inScope('chats', params));
     if (params.q) items = items.filter((chat) => [chat.title, chat.phone].some((value) => like(value, params.q)));
     return {
       items: [...items]
         .sort((a, b) => String(b.last_message_at ?? b.created_at).localeCompare(String(a.last_message_at ?? a.created_at)))
         .map(chatView),
-      channels: db.channels.filter(inCity({})).map(channelView),
+      channels: db.channels.filter(channelsIn()).map(channelView),
     };
   }],
 
@@ -1245,13 +1399,13 @@ const ROUTES = [
 
   ['POST', /^\/api\/chats$/, (_m, body) => {
     // Писать можно только с номеров своего города (администратор — с любого).
-    const available = db.channels.filter(inCity({}));
+    const available = db.channels.filter(channelsIn());
     const channel = body.channel_id ? available.find((item) => item.id === Number(body.channel_id)) : available[0];
     if (body.channel_id && !channel) throw new ApiError(400, 'Ошибка валидации', { channel_id: 'Номер не найден' });
     const chat = {
       id: db.nextId.chat++, channel: 'whatsapp', external_id: null,
       channel_id: channel?.id ?? null,
-      city_id: isAdmin() ? (channel?.city_id ?? null) : (session?.city_id ?? null),
+      city_id: canMoveCity('chats') ? (channel?.city_id ?? null) : (session?.city_id ?? null),
       title: body.title ?? body.phone, phone: required(body, 'phone'),
       contact_id: null, deal_id: null, unread: 0,
       last_message_at: null, created_at: now(),
@@ -1279,7 +1433,7 @@ const ROUTES = [
 
   // --- Почта ---
   ['GET', /^\/api\/emails$/, (_m, _b, params) => {
-    let items = db.emails.filter(inCity(params));
+    let items = db.emails.filter(inScope('emails', params));
     if (params.direction) items = items.filter((email) => email.direction === params.direction);
     if (params.q) items = items.filter((email) => [email.subject, email.body, email.from_addr, email.to_addr]
       .some((value) => like(value, params.q)));
@@ -1307,7 +1461,7 @@ const ROUTES = [
       deal_id: body.deal_id ? Number(body.deal_id) : null,
       created_at: now(),
     };
-    email.city_id = cityForNew({ linked: linkedCity(email), owner: session });
+    email.city_id = cityForNew('emails', { linked: linkedCity(email), owner: session });
     db.emails.push(email);
     return { email, delivery: { status: 'pending', error: email.error } };
   }],
@@ -1344,7 +1498,10 @@ const ROUTES = [
   }],
 
   ['GET', /^\/api\/events$/, (_m, _b, params) => {
-    let items = db.events.filter(inCity(params));
+    // «Только свои» в журнале — события самого сотрудника.
+    let items = !isAdmin() && access('analytics').scope === 'own'
+      ? db.events.filter((event) => can('analytics') && event.user_id === session?.id)
+      : db.events.filter(inScope('analytics', params));
     if (params.entityType) items = items.filter((event) => event.entity_type === params.entityType);
     if (params.from) items = items.filter((event) => event.created_at.slice(0, 10) >= params.from);
     if (params.to) items = items.filter((event) => event.created_at.slice(0, 10) <= params.to);
@@ -1388,7 +1545,7 @@ const ROUTES = [
     return {
       from: report.from,
       to: report.to,
-      items: db.users.filter(inCity(params)).map((user) => {
+      items: db.users.filter(peopleIn('analytics', params)).map((user) => {
         const own = db.deals.filter((deal) => deal.owner_id === user.id);
         const open = own.filter((deal) => stageType(deal) === 'open');
         const won = own.filter((deal) => stageType(deal) === 'won' && inRange(deal.created_at));
@@ -1411,6 +1568,7 @@ const ROUTES = [
 ];
 
 function handle(method, path, body, params) {
+  guard(method, path);
   for (const [routeMethod, pattern, handler] of ROUTES) {
     if (routeMethod !== method) continue;
     const match = pattern.exec(path);

@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { cityParam, cityTag, store } from '../store.js';
+import { allow, cityParam, cityTag, store } from '../store.js';
 import { confirmDialog, el, formatDate, openForm, openPanel, toast } from '../ui.js';
 
 const fields = (options, company = {}) => [
@@ -47,16 +47,16 @@ async function openCompanyDetails(id, onDone) {
       company.notes ? el('div', { class: 'muted', text: company.notes }) : null,
     ]),
     actions: [
-      el('button', { class: 'btn danger', onclick: async () => {
+      allow('companies', 'full', el('button', { class: 'btn danger', onclick: async () => {
         if (!await confirmDialog('Удалить компанию? Контакты и сделки останутся без компании.')) return;
         await api.delete(`/api/companies/${company.id}`);
         store.invalidate('companies');
         toast('Компания удалена');
         panel.close();
         await onDone?.();
-      } }, 'Удалить'),
-      el('button', { class: 'btn secondary', onclick: () => { panel.close(); openCompanyForm(company, onDone); } }, 'Редактировать'),
-    ],
+      } }, 'Удалить')),
+      allow('companies', 'edit', el('button', { class: 'btn secondary', onclick: () => { panel.close(); openCompanyForm(company, onDone); } }, 'Редактировать')),
+    ].filter(Boolean),
   });
 }
 
@@ -78,7 +78,7 @@ export async function renderCompanies(root) {
         el('td', {}, [company.owner_name ?? '—', cityTag(company)]),
         el('td', { class: 'muted', text: formatDate(company.created_at) }),
         el('td', { class: 'actions' }, [
-          el('button', { class: 'btn ghost', onclick: () => openCompanyForm(company, reload) }, '✎'),
+          allow('companies', 'edit', el('button', { class: 'btn ghost', onclick: () => openCompanyForm(company, reload) }, '✎')),
         ]),
       ]))
       : [el('tr', {}, [el('td', { colspan: '7' }, el('div', { class: 'empty', text: 'Компаний не найдено' }))])]));
@@ -91,7 +91,7 @@ export async function renderCompanies(root) {
     el('div', { class: 'topbar' }, [
       el('h1', { text: 'Компании' }),
       el('div', { class: 'toolbar' }, [counter, search,
-        el('button', { class: 'btn', onclick: () => openCompanyForm(null, reload) }, '+ Компания')]),
+        allow('companies', 'edit', el('button', { class: 'btn', onclick: () => openCompanyForm(null, reload) }, '+ Компания'))]),
     ]),
     el('div', { class: 'content' }, [el('div', { class: 'card' }, [
       el('div', { class: 'table-wrap' }, el('table', {}, [

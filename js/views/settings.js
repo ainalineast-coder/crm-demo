@@ -85,7 +85,7 @@ export async function renderSettings(root) {
 
   const save = (values) => api.patch('/api/settings', values);
 
-  const ROLE_LABELS = { admin: 'Администратор — все города', manager: 'Менеджер своего города' };
+  const ADMIN_LABEL = 'Администратор — всё, все города';
   const PROVIDERS = [
     { value: 'none', label: 'Не подключён' },
     { value: 'meta', label: 'WhatsApp Cloud API (Meta)' },
@@ -123,7 +123,7 @@ export async function renderSettings(root) {
     return el('div', { class: 'card' }, [
       el('div', { class: 'card-head', text: 'Города' }),
       el('div', { class: 'card-body', style: 'display:grid;gap:12px' }, [
-        el('div', { class: 'muted', text: 'Менеджер видит заявки, клиентов и переписку только своего города. Администратор видит все города.' }),
+        el('div', { class: 'muted', text: 'Город сотрудника определяет «свои города» в его роли. Администратор видит все города.' }),
         el('div', { class: 'table-wrap' }, el('table', {}, [
           el('thead', {}, [el('tr', {}, ['Город', 'Сотрудников', 'Сделок', 'Номеров WhatsApp', '']
             .map((title, index) => el('th', { class: index && index < 4 ? 'num' : '', text: title })))]),
@@ -155,26 +155,119 @@ export async function renderSettings(root) {
     ]);
   };
 
-  /** Сотрудники: роль и город определяют, что человек видит. */
-  const userForm = (user, cities) => openForm({
+  /** Роли доступа: по каждому разделу уровень и чьи записи видны — как в EspoCRM. */
+  const roleEditor = (role, meta) => {
+    const rows = meta.sections.map((section) => {
+      const current = role?.permissions?.[section.key] ?? { level: 'none', scope: 'city' };
+      const level = el('select', { 'aria-label': `${section.label}: доступ` },
+        meta.levels
+          .filter((item) => !section.readOnly || ['none', 'read'].includes(item.key))
+          .map((item) => el('option', { value: item.key, selected: item.key === current.level }, item.label)));
+      const scope = el('select', { 'aria-label': `${section.label}: чьи записи`, disabled: section.global },
+        meta.scopes.map((item) => el('option', { value: item.key, selected: item.key === current.scope }, item.label)));
+      // Без доступа охват не важен — делаем его неактивным, чтобы не путать.
+      const sync = () => { scope.disabled = section.global || level.value === 'none'; };
+      level.addEventListener('change', sync);
+      sync();
+      return { section, level, scope };
+    });
+
+    return {
+      node: el('div', { class: 'table-wrap' }, el('table', { class: 'role-matrix' }, [
+        el('thead', {}, [el('tr', {}, ['Раздел', 'Что можно делать', 'Чьи записи видны']
+          .map((title) => el('th', { text: title })))]),
+        el('tbody', {}, rows.map(({ section, level, scope }) => el('tr', {}, [
+          el('td', {}, el('strong', { text: section.label })),
+          el('td', {}, level),
+          el('td', {}, section.global ? el('span', { class: 'muted', text: 'общий каталог' }) : scope),
+        ]))),
+      ])),
+      read: () => Object.fromEntries(rows.map(({ section, level, scope }) => [
+        section.key, { level: level.value, scope: scope.value },
+      ])),
+    };
+  };
+
+  const roleForm = (role, meta) => {
+    const matrix = roleEditor(role, meta);
+    openForm({
+      title: role ? `Роль — ${role.name}` : 'Новая роль',
+      fields: [
+        { name: 'name', label: 'Название роли', required: true, value: role?.name, width: 'full' },
+        { name: 'permissions', type: 'custom', width: 'full', node: matrix.node, read: matrix.read },
+      ],
+      onSubmit: async (values) => {
+        if (role) await api.patch(`/api/roles/${role.id}`, values);
+        else await api.post('/api/roles', values);
+        toast(role ? 'Права роли сохранены — действуют сразу' : 'Роль создана');
+        await reload();
+      },
+    });
+  };
+
+  const rolesCard = (roles) => el('div', { class: 'card' }, [
+    el('div', { class: 'card-head' }, [
+      'Роли и доступ',
+      el('button', { class: 'btn', onclick: () => roleForm(null, roles) }, '+ Роль'),
+    ]),
+    el('div', { class: 'card-body', style: 'display:grid;gap:12px' }, [
+      el('div', { class: 'muted', text: 'Роль задаёт для каждого раздела, что сотрудник может делать (нет доступа, только просмотр, просмотр и правка или полный — с удалением) и чьи записи ему видны (только свои, своего города или всех городов). Роль назначается сотруднику ниже.' }),
+      el('div', { class: 'table-wrap' }, el('table', {}, [
+        el('thead', {}, [el('tr', {}, ['Роль', 'Кратко', 'Сотрудников', '']
+          .map((title, index) => el('th', { class: index === 2 ? 'num' : '', text: title })))]),
+        el('tbody', {}, roles.items.map((role) => el('tr', {}, [
+          el('td', {}, el('strong', { text: role.name })),
+          el('td', { class: 'muted', text: roleSummary(role, roles) }),
+          el('td', { class: 'num', text: String(role.users_count) }),
+          el('td', { class: 'actions' }, [
+            el('button', { class: 'btn ghost', title: 'Настроить права', onclick: () => roleForm(role, roles) }, '✎'),
+            el('button', { class: 'btn ghost', title: 'Удалить роль', onclick: async () => {
+              if (!await confirmDialog(`Удалить роль «${role.name}»?`)) return;
+              run(() => api.delete(`/api/roles/${role.id}`), 'Роль удалена');
+            } }, '🗑'),
+          ]),
+        ]))),
+      ])),
+    ]),
+  ]);
+
+  /** «Сделки: редактирование, свой город · Почта: нет доступа…» — коротко по разделам. */
+  const roleSummary = (role, meta) => {
+    const short = { none: 'нет', read: 'просмотр', edit: 'правка', full: 'полный' };
+    const scopes = { own: 'свои', city: 'город', all: 'все города' };
+    return meta.sections.map((section) => {
+      const access = role.permissions[section.key];
+      const scope = access.level === 'none' || section.global ? '' : `, ${scopes[access.scope]}`;
+      return `${section.label}: ${short[access.level]}${scope}`;
+    }).join(' · ');
+  };
+
+  /** Сотрудники: роль доступа и город определяют, что человек видит. */
+  const accessOptions = (roles) => [{ value: 'admin', label: ADMIN_LABEL }]
+    .concat(roles.items.map((role) => ({ value: `role:${role.id}`, label: role.name })));
+
+  const userForm = (user, cities, roles) => openForm({
     title: user ? `Сотрудник — ${user.name}` : 'Новый сотрудник',
     fields: [
       { name: 'name', label: 'Имя', required: true, value: user?.name },
       { name: 'email', label: 'Email для входа', required: true, value: user?.email },
-      { name: 'role', label: 'Роль', type: 'select', value: user?.role ?? 'manager',
-        options: Object.entries(ROLE_LABELS).map(([value, label]) => ({ value, label })) },
+      { name: 'access', label: 'Роль доступа', type: 'select',
+        value: user?.role === 'admin' ? 'admin' : `role:${user?.role_id ?? roles.items[0]?.id ?? ''}`,
+        options: accessOptions(roles) },
       { name: 'city_id', label: 'Город', type: 'select', value: user?.city_id ?? '',
         options: cityOptions(cities, '— не выбран —') },
       { name: 'password', label: user ? 'Новый пароль (если меняете)' : 'Пароль', type: 'password', required: !user },
       user ? { name: 'active', label: 'Доступ открыт', type: 'checkbox', value: Boolean(user.active) } : null,
     ].filter(Boolean),
     onSubmit: async (values) => {
-      if (values.role === 'manager' && !values.city_id) {
-        const error = new Error('Укажите город: менеджер видит заявки только своего города');
+      const { access, ...payload } = values;
+      payload.role = access === 'admin' ? 'admin' : 'manager';
+      payload.role_id = access === 'admin' ? null : Number(String(access).replace('role:', ''));
+      if (payload.role === 'manager' && !payload.city_id) {
+        const error = new Error('Укажите город: от него зависят заявки «своего города»');
         error.details = { city_id: 'Выберите город' };
         throw error;
       }
-      const payload = { ...values };
       if (!payload.password) delete payload.password;
       if (user) await api.patch(`/api/users/${user.id}`, payload);
       else await api.post('/api/users', payload);
@@ -184,10 +277,10 @@ export async function renderSettings(root) {
     },
   });
 
-  const usersCard = (users, cities) => el('div', { class: 'card' }, [
+  const usersCard = (users, cities, roles) => el('div', { class: 'card' }, [
     el('div', { class: 'card-head' }, [
-      'Сотрудники и доступ',
-      el('button', { class: 'btn', onclick: () => userForm(null, cities) }, '+ Сотрудник'),
+      'Сотрудники',
+      el('button', { class: 'btn', onclick: () => userForm(null, cities, roles) }, '+ Сотрудник'),
     ]),
     el('div', { class: 'table-wrap' }, el('table', {}, [
       el('thead', {}, [el('tr', {}, ['Имя', 'Email', 'Роль', 'Город', 'Статус', '']
@@ -195,10 +288,10 @@ export async function renderSettings(root) {
       el('tbody', {}, users.map((user) => el('tr', {}, [
         el('td', {}, el('strong', { text: user.name })),
         el('td', { class: 'muted', text: user.email }),
-        el('td', { text: ROLE_LABELS[user.role] ?? user.role }),
+        el('td', { text: user.role === 'admin' ? ADMIN_LABEL : (user.role_name ?? 'роль не назначена — нет доступа') }),
         el('td', { text: user.role === 'admin' ? 'все города' : (user.city_name ?? '— не выбран —') }),
         el('td', { text: user.active ? 'активен' : 'отключён' }),
-        el('td', { class: 'actions' }, el('button', { class: 'btn ghost', onclick: () => userForm(user, cities) }, '✎')),
+        el('td', { class: 'actions' }, el('button', { class: 'btn ghost', onclick: () => userForm(user, cities, roles) }, '✎')),
       ]))),
     ])),
   ]);
@@ -257,14 +350,15 @@ export async function renderSettings(root) {
   ]);
 
   async function reload() {
-    const [data, users, cities, channels] = await Promise.all([
-      api.get('/api/settings'), store.users(), store.cities(true), api.get('/api/channels'),
+    const [data, users, cities, channels, roles] = await Promise.all([
+      api.get('/api/settings'), store.users(), store.cities(true), api.get('/api/channels'), api.get('/api/roles'),
     ]);
     const { settings, channels: status, webhooks } = data;
 
     content.replaceChildren(
       citiesCard(cities),
-      usersCard(users, cities),
+      rolesCard(roles),
+      usersCard(users, cities, roles),
       channelsCard(channels.items, cities),
 
       section('Почта (SMTP)', 'Исходящие письма уходят с этого ящика; входящие принимает вебхук почтового сервиса.',
