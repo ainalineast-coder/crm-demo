@@ -1,9 +1,12 @@
 import { api } from '../api.js';
+import { cityParam, cityTag, store } from '../store.js';
 import { el, formatDateTime, initials, openForm, toast } from '../ui.js';
 
-/** imBox: переписки с клиентами в WhatsApp. */
+const channelLabel = (channel) => [channel.name, channel.phone].filter(Boolean).join(' · ');
+
+/** imBox: переписки с клиентами в WhatsApp — на номерах своего города. */
 export async function renderChats(root, params = {}) {
-  const state = { chatId: params.id ? Number(params.id) : null, channel: null };
+  const state = { chatId: params.id ? Number(params.id) : null, channels: [] };
 
   const list = el('div', { class: 'chat-list' });
   const pane = el('div', { class: 'chat-pane' });
@@ -24,6 +27,7 @@ export async function renderChats(root, params = {}) {
             ]),
             el('div', { class: 'muted preview', text: chat.last_message ?? 'Нет сообщений' }),
             chat.deal_title ? el('div', { class: 'muted preview', text: `Сделка: ${chat.deal_title}` }) : null,
+            cityTag(chat),
           ]),
         ]))
       : [el('div', { class: 'empty', text: 'Переписок пока нет' })]));
@@ -66,6 +70,9 @@ export async function renderChats(root, params = {}) {
         el('div', {}, [
           el('strong', { text: chat.title ?? chat.phone }),
           el('div', { class: 'muted', text: [chat.phone, chat.deal_title].filter(Boolean).join(' · ') }),
+          el('div', { class: 'muted', style: 'font-size:11px', text: chat.channel_name
+            ? `Номер: ${[chat.channel_name, chat.channel_phone].filter(Boolean).join(' · ')}`
+            : 'Номер не определён — ответ уйдёт с номера города' }),
         ]),
         chat.deal_id ? el('a', { href: `#/deals/${chat.deal_id}`, text: 'Открыть сделку' }) : null,
       ]),
@@ -93,11 +100,11 @@ export async function renderChats(root, params = {}) {
   };
 
   const reload = async () => {
-    const data = await api.get('/api/chats', { q: search.value.trim() || undefined });
-    state.channel = data.channel;
-    channelBadge.textContent = data.channel.ready
-      ? `WhatsApp подключён (${data.channel.provider})`
-      : `WhatsApp не подключён: ${data.channel.missing.join(', ')}`;
+    const data = await api.get('/api/chats', { q: search.value.trim() || undefined, cityId: cityParam() });
+    state.channels = data.channels.filter((channel) => !cityParam() || String(channel.city_id) === cityParam());
+    channelBadge.textContent = state.channels.length
+      ? state.channels.map((channel) => `${channelLabel(channel)}: ${channel.status.ready ? 'подключён' : 'не подключён'}`).join(' | ')
+      : 'Номер WhatsApp для вашего города не добавлен';
     renderList(data.items);
     if (!state.chatId && data.items.length) await openChat(data.items[0].id);
     else if (state.chatId) renderList(data.items);
@@ -111,7 +118,15 @@ export async function renderChats(root, params = {}) {
     fields: [
       { name: 'phone', label: 'Номер телефона клиента', required: true, width: 'full' },
       { name: 'title', label: 'Как подписать', width: 'full' },
-    ],
+      // С какого номера писать — если номеров несколько (у администратора — все города).
+      state.channels.length > 1
+        ? { name: 'channel_id', label: 'С какого номера писать', type: 'select', width: 'full',
+            value: state.channels[0].id,
+            options: state.channels.map((channel) => ({
+              value: channel.id, label: [channelLabel(channel), channel.city_name].filter(Boolean).join(' — '),
+            })) }
+        : null,
+    ].filter(Boolean),
     submitLabel: 'Начать',
     onSubmit: async (values) => {
       const chat = await api.post('/api/chats', values);
@@ -127,7 +142,9 @@ export async function renderChats(root, params = {}) {
       ]),
       el('div', { class: 'toolbar' }, [
         search,
-        el('button', { class: 'btn secondary', onclick: () => { location.hash = '#/settings'; } }, 'Настроить канал'),
+        store.isAdmin()
+          ? el('button', { class: 'btn secondary', onclick: () => { location.hash = '#/settings'; } }, 'Номера WhatsApp')
+          : null,
         el('button', { class: 'btn', onclick: newChat }, '+ ПЕРЕПИСКА'),
       ]),
     ]),

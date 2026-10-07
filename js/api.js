@@ -3,7 +3,7 @@
  * что и у настоящего бэкенда, но всё считается в браузере.
  * Экраны приложения используют этот модуль вместо public/js/api.js.
  */
-import { buildDataset } from './demo-data.js';
+import { USERS, buildDataset } from './demo-data.js';
 // Константы берём из того же файла, что и сервер (src/lib/pipelines.js).
 import { CURRENCIES, LEAD_TYPES, STAGE_COLORS, buildStages, normalizeTag } from './stage-constants.js';
 
@@ -19,7 +19,39 @@ export const setUnauthorizedHandler = () => {};
 
 const db = buildDataset();
 const DEMO_USER = db.users[0];
-let session = DEMO_USER; // демо открывается уже авторизованным
+
+// Демо открывается уже авторизованным. Переключатель «Смотреть как» на странице
+// запоминает выбранного сотрудника, чтобы показать CRM глазами менеджера города.
+const DEMO_USER_KEY = 'crm.demoUser';
+const savedUser = () => {
+  try {
+    const email = sessionStorage.getItem(DEMO_USER_KEY);
+    return db.users.find((user) => user.email === email) ?? null;
+  } catch {
+    return null;
+  }
+};
+let session = savedUser() ?? DEMO_USER;
+
+/** Сотрудники для переключателя «Смотреть как» на демо-странице. */
+export const demoAccounts = () => USERS.map((user) => ({
+  email: user.email,
+  current: user.email === session?.email,
+  label: user.role === 'admin'
+    ? `${user.name.split(' ')[0]} — владелец, все города`
+    : `${user.name.split(' ')[0]} — менеджер, ${db.cities.find((city) => city.id === user.city_id)?.name ?? 'без города'}`,
+}));
+
+/** Перезагружает демо от имени другого сотрудника (данные демо при этом сбрасываются). */
+export function viewAs(email) {
+  try {
+    sessionStorage.setItem(DEMO_USER_KEY, email);
+  } catch {
+    // Без хранилища выбор не переживёт перезагрузку — входим вручную.
+    session = db.users.find((user) => user.email === email) ?? session;
+  }
+  location.reload();
+}
 
 const TAG_COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#4a3aa7', '#e34948'];
 
@@ -35,6 +67,67 @@ const like = (value, query) => String(value ?? '').toLowerCase().includes(query.
 const percent = (part, total) => (total > 0 ? Math.round((part / total) * 100) : 0);
 
 const userName = (id) => byId(db.users, id)?.name ?? null;
+const cityName = (id) => byId(db.cities, id)?.name ?? null;
+
+// --- Доступ по городам: те же правила, что на сервере (src/lib/scope.js) ---
+const isAdmin = () => session?.role === 'admin';
+const canSee = (row) => Boolean(row) && (isAdmin() || (row.city_id ?? null) === (session?.city_id ?? null));
+/** Фильтр списка: менеджер — свой город, администратор — все или выбранный (cityId). */
+const inCity = (params = {}) => (row) => {
+  if (!isAdmin()) return canSee(row);
+  if (params.cityId === 'none') return (row.city_id ?? null) === null;
+  if (Number(params.cityId) > 0) return row.city_id === Number(params.cityId);
+  return true;
+};
+const visible = (table, id, message = 'Не найдено') => {
+  const row = byId(db[table], id);
+  if (!canSee(row)) throw new ApiError(404, message);
+  return row;
+};
+const requireAdmin = () => {
+  if (!isAdmin()) throw new ApiError(403, 'Недостаточно прав');
+};
+/** Менеджер назначает ответственным только коллег своего города. */
+const assignable = (userId, field = 'owner_id') => {
+  const user = byId(db.users, userId);
+  if (!user || (!isAdmin() && (user.city_id ?? null) !== (session?.city_id ?? null))) {
+    throw new ApiError(400, 'Ошибка валидации', { [field]: 'Сотрудник не найден в вашем городе' });
+  }
+  return user;
+};
+/** Ссылки на сделку, контакт, компанию: город первой найденной записи. */
+const linkedCity = (body) => {
+  let city;
+  for (const [field, table, message] of [['deal_id', 'deals', 'Сделка не найдена'],
+    ['contact_id', 'contacts', 'Контакт не найден'], ['company_id', 'companies', 'Компания не найдена']]) {
+    if (!body?.[field]) continue;
+    const row = visible(table, body[field], message);
+    if (city === undefined) city = row.city_id ?? null;
+  }
+  return city;
+};
+const checkCity = (value) => {
+  if (value === null || value === undefined || value === '') return null;
+  if (!byId(db.cities, value)) throw new ApiError(400, 'Ошибка валидации', { city_id: 'Город не найден' });
+  return Number(value);
+};
+/** Город новой записи: менеджер — свой; администратор — указанный, связанной записи или ответственного. */
+const cityForNew = ({ requested, linked, owner } = {}) => {
+  if (!isAdmin()) return session?.city_id ?? null;
+  if (requested !== undefined) return checkCity(requested);
+  if (linked !== undefined) return linked;
+  return owner?.city_id ?? null;
+};
+const userView = (user) => ({ ...user, city_name: cityName(user.city_id) });
+const channelStatus = (channel) => (channel.active
+  ? { provider: 'demo', ready: false, missing: ['демо-режим: сообщения не уходят наружу'] }
+  : { provider: channel.provider, ready: false, missing: ['номер отключён'] });
+const channelView = (channel) => ({
+  ...channel,
+  city_name: cityName(channel.city_id),
+  status: channelStatus(channel),
+  ...(isAdmin() ? { webhook_url: `https://ваш-адрес/api/webhooks/whatsapp?channel=${channel.id}` } : {}),
+});
 const companyName = (id) => byId(db.companies, id)?.name ?? null;
 
 const contactOf = (id) => byId(db.contacts, id);
@@ -57,6 +150,7 @@ const dealView = (deal) => {
     stage_type: stage?.type ?? null,
     stage_color: stage?.color ?? null,
     pipeline_name: byId(db.pipelines, deal.pipeline_id)?.name ?? null,
+    city_name: cityName(deal.city_id),
     company_name: companyName(deal.company_id),
     owner_name: userName(deal.owner_id),
     contact_name: contactFullName(contact),
@@ -70,11 +164,13 @@ const contactView = (contact) => ({
   ...contact,
   company_name: companyName(contact.company_id),
   owner_name: userName(contact.owner_id),
+  city_name: cityName(contact.city_id),
 });
 
 const companyView = (company) => ({
   ...company,
   owner_name: userName(company.owner_id),
+  city_name: cityName(company.city_id),
   contacts_count: db.contacts.filter((contact) => contact.company_id === company.id).length,
   deals_count: db.deals.filter((deal) => deal.company_id === company.id).length,
 });
@@ -82,6 +178,7 @@ const companyView = (company) => ({
 const taskView = (task) => ({
   ...task,
   assignee_name: userName(task.assignee_id),
+  city_name: cityName(task.city_id),
   deal_title: byId(db.deals, task.deal_id)?.title ?? null,
   company_name: companyName(task.company_id),
 });
@@ -159,6 +256,9 @@ const chatView = (chat) => ({
   ...chat,
   contact_name: contactFullName(contactOf(chat.contact_id)),
   deal_title: byId(db.deals, chat.deal_id)?.title ?? null,
+  channel_name: byId(db.channels, chat.channel_id)?.name ?? null,
+  channel_phone: byId(db.channels, chat.channel_id)?.phone ?? null,
+  city_name: cityName(chat.city_id),
   last_message: db.chatMessages.filter((message) => message.chat_id === chat.id).at(-1)?.body ?? null,
   messages_count: db.chatMessages.filter((message) => message.chat_id === chat.id).length,
 });
@@ -170,13 +270,13 @@ function logEvent(event) {
     entity_type: event.entity_type, entity_id: event.entity_id ?? null,
     entity_name: event.entity_name ?? null, action: event.action,
     field: event.field ?? null, old_value: event.old_value ?? null, new_value: event.new_value ?? null,
-    user_id: session?.id ?? DEMO_USER.id, created_at: now(),
+    user_id: session?.id ?? DEMO_USER.id, city_id: event.city_id ?? null, created_at: now(),
   });
 }
 
 const tagView = (tag) => ({
   ...tag,
-  leads_count: db.dealTags.filter((link) => link.tag_id === tag.id).length,
+  leads_count: db.dealTags.filter((link) => link.tag_id === tag.id && canSee(byId(db.deals, link.deal_id))).length,
 });
 
 const parseTagIds = (params) => String(params.tagIds ?? '')
@@ -186,7 +286,9 @@ const parseTagIds = (params) => String(params.tagIds ?? '')
 
 function filterDeals(params) {
   const tagIds = parseTagIds(params);
+  const city = inCity(params);
   return db.deals.filter((deal) => {
+    if (!city(deal)) return false;
     if (params.pipelineId && deal.pipeline_id !== Number(params.pipelineId)) return false;
     if (params.stageId && deal.stage_id !== Number(params.stageId)) return false;
     if (params.leadType && deal.lead_type !== params.leadType) return false;
@@ -282,29 +384,151 @@ function campaignsReport(params) {
     };
   });
 
-  return { from, to, tagIds: parseTagIds(params), totals, campaigns, byDay, byStage };
+  const cityGroups = new Map();
+  for (const deal of deals) {
+    if (!cityGroups.has(deal.city_id ?? null)) cityGroups.set(deal.city_id ?? null, []);
+    cityGroups.get(deal.city_id ?? null).push(deal);
+  }
+  const byCity = [...cityGroups.entries()].map(([cityId, list]) => {
+    const measured = measure(list);
+    return {
+      cityId, name: cityName(cityId) ?? 'Без города', ...measured,
+      conversion: percent(measured.won, measured.won + measured.lost),
+    };
+  }).sort((a, b) => b.leads - a.leads || a.name.localeCompare(b.name));
+
+  return { from, to, tagIds: parseTagIds(params), totals, campaigns, byDay, byStage, byCity };
 }
 
 const ROUTES = [
   ['GET', /^\/api\/auth\/me$/, () => {
     if (!session) throw new ApiError(401, 'Требуется авторизация');
-    return { user: session };
+    return { user: userView(session) };
   }],
   ['POST', /^\/api\/auth\/login$/, (_m, body) => {
     const user = db.users.find((item) => item.email === String(body.email ?? '').toLowerCase());
     if (!user) throw new ApiError(401, 'Неверный email или пароль');
     session = user;
-    return { user, token: 'demo' };
+    return { user: userView(user), token: 'demo' };
   }],
   ['POST', /^\/api\/auth\/logout$/, () => { session = null; return null; }],
 
-  ['GET', /^\/api\/users$/, () => ({ items: db.users })],
+  ['GET', /^\/api\/users$/, (_m, _b, params) => ({
+    items: db.users.filter(inCity(params)).map(userView).sort((a, b) => a.name.localeCompare(b.name)),
+  })],
+
+  ['POST', /^\/api\/users$/, (_m, body) => {
+    requireAdmin();
+    const email = required(body, 'email').toLowerCase();
+    if (db.users.some((user) => user.email === email)) throw new ApiError(409, 'Такой email уже есть');
+    const user = {
+      id: db.nextId.user++, name: required(body, 'name'), email,
+      role: body.role === 'admin' ? 'admin' : 'manager', city_id: checkCity(body.city_id),
+      active: 1, created_at: now(),
+    };
+    required(body, 'password');
+    db.users.push(user);
+    return userView(user);
+  }],
+
+  ['PATCH', /^\/api\/users\/(\d+)$/, (match, body) => {
+    requireAdmin();
+    const user = byId(db.users, match[1]);
+    if (!user) throw new ApiError(404, 'Пользователь не найден');
+    if (user.id === session.id && (body.role === 'manager' || body.active === false)) {
+      throw new ApiError(400, 'Нельзя снять права администратора или отключить самого себя');
+    }
+    for (const field of ['name', 'email', 'role']) if (body[field]) user[field] = body[field];
+    if (Object.hasOwn(body, 'city_id')) user.city_id = checkCity(body.city_id);
+    if (Object.hasOwn(body, 'active')) user.active = body.active ? 1 : 0;
+    return userView(user);
+  }],
+
+  ['GET', /^\/api\/cities$/, () => ({
+    items: db.cities.filter((city) => isAdmin() || city.id === session?.city_id).map((city) => ({
+      ...city,
+      users_count: db.users.filter((user) => user.city_id === city.id && user.active).length,
+      deals_count: db.deals.filter((deal) => deal.city_id === city.id).length,
+      channels_count: db.channels.filter((channel) => channel.city_id === city.id).length,
+    })),
+  })],
+
+  ['POST', /^\/api\/cities$/, (_m, body) => {
+    requireAdmin();
+    const name = required(body, 'name');
+    if (db.cities.some((city) => city.name.toLowerCase() === name.toLowerCase())) {
+      throw new ApiError(409, `Город «${name}» уже есть`);
+    }
+    const city = { id: db.nextId.city++, name, position: db.cities.length, created_at: now() };
+    db.cities.push(city);
+    logEvent({ entity_type: 'city', entity_id: city.id, entity_name: name, action: 'create', field: 'Город добавлен' });
+    return city;
+  }],
+
+  ['PATCH', /^\/api\/cities\/(\d+)$/, (match, body) => {
+    requireAdmin();
+    const city = byId(db.cities, match[1]);
+    if (!city) throw new ApiError(404, 'Город не найден');
+    city.name = required(body, 'name');
+    return city;
+  }],
+
+  ['DELETE', /^\/api\/cities\/(\d+)$/, (match) => {
+    requireAdmin();
+    const id = Number(match[1]);
+    const deals = db.deals.filter((deal) => deal.city_id === id).length;
+    if (deals) throw new ApiError(409, `В городе ${deals} сделок — сначала перенесите их в другой город`);
+    const users = db.users.filter((user) => user.city_id === id && user.active).length;
+    if (users) throw new ApiError(409, `К городу привязано сотрудников: ${users} — сначала переведите их`);
+    db.cities = db.cities.filter((city) => city.id !== id);
+    return null;
+  }],
+
+  ['GET', /^\/api\/channels$/, (_m, _b, params) => ({
+    items: db.channels.filter(inCity(params)).map(channelView),
+  })],
+
+  ['POST', /^\/api\/channels$/, (_m, body) => {
+    requireAdmin();
+    const channel = {
+      id: db.nextId.channel++, name: required(body, 'name'), phone: body.phone ?? null,
+      city_id: checkCity(body.city_id), provider: body.provider ?? 'none', phone_id: body.phone_id ?? null,
+      api_url: body.api_url ?? null, has_token: Boolean(body.token), active: 1, created_at: now(),
+    };
+    db.channels.push(channel);
+    return channelView(channel);
+  }],
+
+  ['PATCH', /^\/api\/channels\/(\d+)$/, (match, body) => {
+    requireAdmin();
+    const channel = byId(db.channels, match[1]);
+    if (!channel) throw new ApiError(404, 'Номер не найден');
+    for (const field of ['name', 'phone', 'provider', 'phone_id', 'api_url']) {
+      if (Object.hasOwn(body, field)) channel[field] = body[field];
+    }
+    if (body.token) channel.has_token = true;
+    if (Object.hasOwn(body, 'active')) channel.active = body.active ? 1 : 0;
+    if (Object.hasOwn(body, 'city_id')) {
+      channel.city_id = checkCity(body.city_id);
+      // Переписки номера переезжают вместе с ним.
+      for (const chat of db.chats) if (chat.channel_id === channel.id) chat.city_id = channel.city_id;
+    }
+    return channelView(channel);
+  }],
+
+  ['DELETE', /^\/api\/channels\/(\d+)$/, (match) => {
+    requireAdmin();
+    const id = Number(match[1]);
+    db.channels = db.channels.filter((channel) => channel.id !== id);
+    for (const chat of db.chats) if (chat.channel_id === id) chat.channel_id = null;
+    return null;
+  }],
   ['GET', /^\/api\/pipelines$/, () => ({
     items: db.pipelines.map((pipeline) => ({
       ...pipeline,
       stages: stagesOfPipeline(pipeline.id).map((stage) => ({
         ...stage,
-        deals_count: db.deals.filter((deal) => deal.stage_id === stage.id).length,
+        deals_count: db.deals.filter((deal) => deal.stage_id === stage.id && canSee(deal)).length,
       })),
     })),
   })],
@@ -316,6 +540,7 @@ const ROUTES = [
   }],
 
   ['POST', /^\/api\/pipelines$/, (_m, body) => {
+    requireAdmin();
     const name = required(body, 'name');
     const names = Array.isArray(body.stages) && body.stages.length
       ? body.stages.map((item) => String(item).trim()).filter(Boolean)
@@ -335,6 +560,7 @@ const ROUTES = [
   }],
 
   ['DELETE', /^\/api\/pipelines\/(\d+)$/, (match) => {
+    requireAdmin();
     const id = Number(match[1]);
     if (db.pipelines.length <= 1) throw new ApiError(409, 'Нельзя удалить единственную воронку');
     if (db.deals.some((deal) => deal.pipeline_id === id)) {
@@ -346,6 +572,7 @@ const ROUTES = [
   }],
 
   ['POST', /^\/api\/pipelines\/(\d+)\/stages$/, (match, body) => {
+    requireAdmin();
     const pipelineId = Number(match[1]);
     if (!byId(db.pipelines, pipelineId)) throw new ApiError(404, 'Воронка не найдена');
     const name = required(body, 'name');
@@ -366,6 +593,7 @@ const ROUTES = [
   }],
 
   ['PATCH', /^\/api\/stages\/(\d+)$/, (match, body) => {
+    requireAdmin();
     const stage = stageById(Number(match[1]));
     if (!stage) throw new ApiError(404, 'Этап не найден');
     if (Object.hasOwn(body, 'name')) stage.name = required(body, 'name');
@@ -374,6 +602,7 @@ const ROUTES = [
   }],
 
   ['DELETE', /^\/api\/stages\/(\d+)$/, (match) => {
+    requireAdmin();
     const stage = stageById(Number(match[1]));
     if (!stage) throw new ApiError(404, 'Этап не найден');
     if (stage.type !== 'open') throw new ApiError(409, 'Закрывающие этапы удалить нельзя');
@@ -414,8 +643,7 @@ const ROUTES = [
   }],
 
   ['GET', /^\/api\/deals\/(\d+)$/, (match) => {
-    const deal = byId(db.deals, match[1]);
-    if (!deal) throw new ApiError(404, 'Сделка не найдена');
+    const deal = visible('deals', match[1], 'Сделка не найдена');
     return {
       ...dealView(deal),
       tasks: db.tasks.filter((task) => task.deal_id === deal.id).map(taskView),
@@ -428,6 +656,12 @@ const ROUTES = [
   ['POST', /^\/api\/deals$/, (_m, body) => {
     const title = required(body, 'title');
     if (title.length < 2) throw new ApiError(400, 'Ошибка валидации', { title: 'Минимум 2 символов' });
+    const owner = assignable(body.owner_id ? Number(body.owner_id) : session.id);
+    const cityId = cityForNew({
+      requested: Object.hasOwn(body, 'city_id') ? body.city_id : undefined,
+      linked: linkedCity(body),
+      owner,
+    });
 
     let contactId = body.contact_id ? Number(body.contact_id) : null;
     if (!contactId && body.contact && (body.contact.first_name || body.contact.last_name || body.contact.phone)) {
@@ -437,7 +671,7 @@ const ROUTES = [
         last_name: body.contact.last_name ?? null,
         phone: body.contact.phone ?? null,
         email: body.contact.email ?? null,
-        position: null, company_id: null, owner_id: session?.id ?? DEMO_USER.id, notes: null,
+        position: null, company_id: null, owner_id: owner.id, city_id: cityId, notes: null,
         created_at: now(), updated_at: now(),
       };
       db.contacts.push(contact);
@@ -460,7 +694,8 @@ const ROUTES = [
       lead_type: LEAD_TYPES.includes(body.lead_type) ? body.lead_type : 'individual',
       company_id: body.company_id ? Number(body.company_id) : null,
       contact_id: contactId,
-      owner_id: body.owner_id ? Number(body.owner_id) : (session?.id ?? DEMO_USER.id),
+      owner_id: owner.id,
+      city_id: cityId,
       expected_close_date: body.expected_close_date ?? null,
       closed_at: stage.type === 'open' ? null : now(),
       notes: body.notes ?? null,
@@ -479,8 +714,12 @@ const ROUTES = [
   }],
 
   ['PATCH', /^\/api\/deals\/(\d+)$/, (match, body) => {
-    const deal = byId(db.deals, match[1]);
-    if (!deal) throw new ApiError(404, 'Сделка не найдена');
+    const deal = visible('deals', match[1], 'Сделка не найдена');
+    linkedCity(body);
+    const owner = body.owner_id ? assignable(body.owner_id) : null;
+    // Город меняет администратор; смена ответственного переносит сделку в его город.
+    if (isAdmin() && Object.hasOwn(body, 'city_id')) deal.city_id = checkCity(body.city_id);
+    else if (isAdmin() && owner?.city_id) deal.city_id = owner.city_id;
 
     if (Object.hasOwn(body, 'title')) {
       const title = required(body, 'title');
@@ -498,7 +737,7 @@ const ROUTES = [
       });
       logEvent({
         entity_type: 'deal', entity_id: deal.id, entity_name: deal.title, action: 'update',
-        field: 'Этап', old_value: stageById(deal.stage_id)?.name, new_value: next.name,
+        field: 'Этап', old_value: stageById(deal.stage_id)?.name, new_value: next.name, city_id: deal.city_id,
       });
       deal.stage_id = next.id;
       deal.pipeline_id = next.pipeline_id;
@@ -518,7 +757,7 @@ const ROUTES = [
   }],
 
   ['DELETE', /^\/api\/deals\/(\d+)$/, (match) => {
-    const id = Number(match[1]);
+    const id = visible('deals', match[1], 'Сделка не найдена').id;
     db.deals = db.deals.filter((deal) => deal.id !== id);
     db.dealTags = db.dealTags.filter((link) => link.deal_id !== id);
     db.tasks = db.tasks.filter((task) => task.deal_id !== id);
@@ -559,7 +798,7 @@ const ROUTES = [
   }],
 
   ['GET', /^\/api\/contacts$/, (_m, _b, params) => {
-    let items = db.contacts;
+    let items = db.contacts.filter(inCity(params));
     if (params.companyId) items = items.filter((contact) => contact.company_id === Number(params.companyId));
     if (params.ownerId) items = items.filter((contact) => contact.owner_id === Number(params.ownerId));
     if (params.q) {
@@ -579,17 +818,21 @@ const ROUTES = [
       phone: body.phone ?? null,
       position: body.position ?? null,
       company_id: body.company_id ? Number(body.company_id) : null,
-      owner_id: body.owner_id ? Number(body.owner_id) : (session?.id ?? DEMO_USER.id),
+      owner_id: assignable(body.owner_id ? Number(body.owner_id) : session.id).id,
       notes: body.notes ?? null,
       created_at: now(), updated_at: now(),
     };
+    contact.city_id = cityForNew({
+      requested: Object.hasOwn(body, 'city_id') ? body.city_id : undefined,
+      linked: linkedCity(body),
+      owner: byId(db.users, contact.owner_id),
+    });
     db.contacts.push(contact);
     return contactView(contact);
   }],
 
   ['PATCH', /^\/api\/contacts\/(\d+)$/, (match, body) => {
-    const contact = byId(db.contacts, match[1]);
-    if (!contact) throw new ApiError(404, 'Контакт не найден');
+    const contact = visible('contacts', match[1], 'Контакт не найден');
     for (const field of ['first_name', 'last_name', 'email', 'phone', 'position', 'notes']) {
       if (Object.hasOwn(body, field)) contact[field] = body[field];
     }
@@ -601,12 +844,13 @@ const ROUTES = [
   }],
 
   ['DELETE', /^\/api\/contacts\/(\d+)$/, (match) => {
+    visible('contacts', match[1], 'Контакт не найден');
     db.contacts = db.contacts.filter((contact) => contact.id !== Number(match[1]));
     return null;
   }],
 
   ['GET', /^\/api\/companies$/, (_m, _b, params) => {
-    let items = db.companies;
+    let items = db.companies.filter(inCity(params));
     if (params.q) items = items.filter((company) => [company.name, company.industry, company.phone]
       .some((value) => like(value, params.q)));
     if (params.ownerId) items = items.filter((company) => company.owner_id === Number(params.ownerId));
@@ -615,12 +859,11 @@ const ROUTES = [
   }],
 
   ['GET', /^\/api\/companies\/(\d+)$/, (match) => {
-    const company = byId(db.companies, match[1]);
-    if (!company) throw new ApiError(404, 'Компания не найдена');
+    const company = visible('companies', match[1], 'Компания не найдена');
     return {
       ...companyView(company),
-      contacts: db.contacts.filter((contact) => contact.company_id === company.id),
-      deals: db.deals.filter((deal) => deal.company_id === company.id),
+      contacts: db.contacts.filter((contact) => contact.company_id === company.id && canSee(contact)),
+      deals: db.deals.filter((deal) => deal.company_id === company.id && canSee(deal)),
     };
   }],
 
@@ -630,16 +873,19 @@ const ROUTES = [
       name: required(body, 'name'),
       industry: body.industry ?? null, website: body.website ?? null, phone: body.phone ?? null,
       address: body.address ?? null, notes: body.notes ?? null,
-      owner_id: body.owner_id ? Number(body.owner_id) : (session?.id ?? DEMO_USER.id),
+      owner_id: assignable(body.owner_id ? Number(body.owner_id) : session.id).id,
       created_at: now(), updated_at: now(),
     };
+    company.city_id = cityForNew({
+      requested: Object.hasOwn(body, 'city_id') ? body.city_id : undefined,
+      owner: byId(db.users, company.owner_id),
+    });
     db.companies.push(company);
     return companyView(company);
   }],
 
   ['PATCH', /^\/api\/companies\/(\d+)$/, (match, body) => {
-    const company = byId(db.companies, match[1]);
-    if (!company) throw new ApiError(404, 'Компания не найдена');
+    const company = visible('companies', match[1], 'Компания не найдена');
     for (const field of ['name', 'industry', 'website', 'phone', 'address', 'notes']) {
       if (Object.hasOwn(body, field)) company[field] = body[field];
     }
@@ -649,12 +895,13 @@ const ROUTES = [
   }],
 
   ['DELETE', /^\/api\/companies\/(\d+)$/, (match) => {
+    visible('companies', match[1], 'Компания не найдена');
     db.companies = db.companies.filter((company) => company.id !== Number(match[1]));
     return null;
   }],
 
   ['GET', /^\/api\/tasks$/, (_m, _b, params) => {
-    let items = db.tasks;
+    let items = db.tasks.filter(inCity(params));
     if (params.done === 'true') items = items.filter((task) => task.done);
     if (params.done === 'false') items = items.filter((task) => !task.done);
     if (params.overdue === 'true') {
@@ -682,13 +929,18 @@ const ROUTES = [
       deal_id: body.deal_id ? Number(body.deal_id) : null,
       created_at: now(), updated_at: now(),
     };
+    task.city_id = cityForNew({
+      requested: Object.hasOwn(body, 'city_id') ? body.city_id : undefined,
+      linked: linkedCity(body),
+      owner: assignable(task.assignee_id, 'assignee_id'),
+    });
     db.tasks.push(task);
     return taskView(task);
   }],
 
   ['PATCH', /^\/api\/tasks\/(\d+)$/, (match, body) => {
-    const task = byId(db.tasks, match[1]);
-    if (!task) throw new ApiError(404, 'Задача не найдена');
+    const task = visible('tasks', match[1], 'Задача не найдена');
+    linkedCity(body);
     for (const field of ['title', 'description', 'due_date', 'priority']) {
       if (Object.hasOwn(body, field)) task[field] = body[field];
     }
@@ -701,6 +953,7 @@ const ROUTES = [
   }],
 
   ['DELETE', /^\/api\/tasks\/(\d+)$/, (match) => {
+    visible('tasks', match[1], 'Задача не найдена');
     db.tasks = db.tasks.filter((task) => task.id !== Number(match[1]));
     return null;
   }],
@@ -728,21 +981,26 @@ const ROUTES = [
     if (!activity.company_id && !activity.contact_id && !activity.deal_id) {
       throw new ApiError(400, 'Укажите, к чему относится запись: компания, контакт или сделка');
     }
+    linkedCity(activity);
     db.activities.push(activity);
     return activityView(activity);
   }],
 
-  ['GET', /^\/api\/dashboard$/, () => {
-    const open = db.deals.filter((deal) => stageType(deal) === 'open');
-    const won = db.deals.filter((deal) => stageType(deal) === 'won');
-    const lost = db.deals.filter((deal) => stageType(deal) === 'lost');
+  ['GET', /^\/api\/dashboard$/, (_m, _b, params) => {
+    const city = inCity(params);
+    const deals = db.deals.filter(city);
+    const open = deals.filter((deal) => stageType(deal) === 'open');
+    const won = deals.filter((deal) => stageType(deal) === 'won');
+    const lost = deals.filter((deal) => stageType(deal) === 'lost');
     const today = new Date().toISOString().slice(0, 10);
-    const openTasks = db.tasks.filter((task) => !task.done);
+    const tasks = db.tasks.filter(city);
+    const openTasks = tasks.filter((task) => !task.done);
+    const dealIds = new Set(deals.map((deal) => deal.id));
 
     return {
       totals: {
-        companies: db.companies.length,
-        contacts: db.contacts.length,
+        companies: db.companies.filter(city).length,
+        contacts: db.contacts.filter(city).length,
         open_deals: open.length,
         open_amount: open.reduce((sum, deal) => sum + deal.amount, 0),
         won_amount: won.reduce((sum, deal) => sum + deal.amount, 0),
@@ -751,7 +1009,7 @@ const ROUTES = [
       },
       pipeline: { id: db.pipelines[0].id, name: db.pipelines[0].name },
       byStage: stagesOfPipeline(db.pipelines[0].id).map((stage) => {
-        const list = db.deals.filter((deal) => deal.stage_id === stage.id);
+        const list = deals.filter((deal) => deal.stage_id === stage.id);
         return {
           id: stage.id, label: stage.name, color: stage.color, type: stage.type,
           count: list.length, amount: list.reduce((sum, deal) => sum + deal.amount, 0),
@@ -759,9 +1017,9 @@ const ROUTES = [
       }),
       conversion: percent(won.length, won.length + lost.length),
       topDeals: [...open].sort((a, b) => b.amount - a.amount).slice(0, 5).map(dealView),
-      upcomingTasks: db.tasks.filter((task) => !task.done && task.due_date)
+      upcomingTasks: tasks.filter((task) => !task.done && task.due_date)
         .sort((a, b) => a.due_date.localeCompare(b.due_date)).slice(0, 5).map(taskView),
-      recentActivities: [...db.activities]
+      recentActivities: db.activities.filter((item) => dealIds.has(item.deal_id))
         .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id - a.id)
         .slice(0, 8).map(activityView),
     };
@@ -818,10 +1076,12 @@ const ROUTES = [
     return null;
   }],
 
-  ['GET', /^\/api\/deals\/(\d+)\/items$/, (match) => ({ items: itemsOf(Number(match[1])) })],
+  ['GET', /^\/api\/deals\/(\d+)\/items$/, (match) => ({
+    items: itemsOf(visible('deals', match[1], 'Сделка не найдена').id),
+  })],
 
   ['POST', /^\/api\/deals\/(\d+)\/items$/, (match, body) => {
-    const dealId = Number(match[1]);
+    const dealId = visible('deals', match[1], 'Сделка не найдена').id;
     const product = body.product_id ? byId(db.products, body.product_id) : null;
     const name = body.name ?? product?.name;
     if (!name) throw new ApiError(400, 'Ошибка валидации', { name: 'Укажите товар' });
@@ -835,7 +1095,7 @@ const ROUTES = [
   }],
 
   ['DELETE', /^\/api\/deals\/(\d+)\/items\/(\d+)$/, (match) => {
-    const dealId = Number(match[1]);
+    const dealId = visible('deals', match[1], 'Сделка не найдена').id;
     db.dealItems = db.dealItems.filter((item) => item.id !== Number(match[2]));
     return { items: itemsOf(dealId), amount: syncDealAmount(dealId) };
   }],
@@ -849,7 +1109,7 @@ const ROUTES = [
 
   // --- Звонки ---
   ['GET', /^\/api\/calls$/, (_m, _b, params) => {
-    let items = db.calls;
+    let items = db.calls.filter(inCity(params));
     if (params.direction) items = items.filter((call) => call.direction === params.direction);
     if (params.dealId) items = items.filter((call) => call.deal_id === Number(params.dealId));
     if (params.from) items = items.filter((call) => call.created_at.slice(0, 10) >= params.from);
@@ -861,7 +1121,8 @@ const ROUTES = [
   ['GET', /^\/api\/calls\/report$/, (_m, _b, params) => {
     const to = params.to ?? new Date().toISOString().slice(0, 10);
     const from = params.from ?? new Date(Date.now() - 29 * 86_400_000).toISOString().slice(0, 10);
-    const inRange = db.calls.filter((call) => call.created_at.slice(0, 10) >= from && call.created_at.slice(0, 10) <= to);
+    const inRange = db.calls.filter(inCity(params))
+      .filter((call) => call.created_at.slice(0, 10) >= from && call.created_at.slice(0, 10) <= to);
     const measure = (list) => ({
       total: list.length,
       incoming: list.filter((call) => call.direction === 'in').length,
@@ -873,7 +1134,7 @@ const ROUTES = [
     return {
       from, to,
       totals: measure(inRange),
-      byUser: db.users.map((user) => ({
+      byUser: db.users.filter(inCity(params)).map((user) => ({
         id: user.id, name: user.name,
         ...measure(inRange.filter((call) => call.user_id === user.id)),
       })).sort((a, b) => b.total - a.total),
@@ -894,6 +1155,7 @@ const ROUTES = [
       contact_id: body.contact_id ? Number(body.contact_id) : null,
       created_at: now(),
     };
+    call.city_id = cityForNew({ linked: linkedCity(call), owner: session });
     db.calls.push(call);
 
     if (call.deal_id) {
@@ -906,6 +1168,7 @@ const ROUTES = [
     logEvent({
       entity_type: 'call', entity_id: call.id, entity_name: call.phone, action: 'create',
       field: call.direction === 'in' ? 'Входящий звонок' : 'Исходящий звонок', new_value: `${call.duration} сек.`,
+      city_id: call.city_id,
     });
     return callView(call);
   }],
@@ -913,13 +1176,13 @@ const ROUTES = [
   // --- Цели ---
   ['GET', /^\/api\/goals$/, (_m, _b, params) => {
     const period = /^\d{4}-\d{2}$/.test(String(params.period ?? '')) ? params.period : new Date().toISOString().slice(0, 7);
-    const items = db.users.map((user) => {
+    const items = db.users.filter(inCity(params)).map((user) => {
       const goal = db.goals.find((item) => item.user_id === user.id && item.period === period);
       const won = db.deals.filter((deal) => deal.owner_id === user.id && stageType(deal) === 'won'
         && (deal.closed_at ?? deal.updated_at).slice(0, 7) === period);
       const wonAmount = won.reduce((sum, deal) => sum + deal.amount, 0);
       return {
-        user_id: user.id, name: user.name, goal_id: goal?.id ?? 0,
+        user_id: user.id, name: user.name, city_name: cityName(user.city_id), goal_id: goal?.id ?? 0,
         target_amount: goal?.target_amount ?? 0, target_count: goal?.target_count ?? 0,
         won_count: won.length, won_amount: wonAmount,
         progress_amount: goal?.target_amount ? Math.round((wonAmount / goal.target_amount) * 100) : null,
@@ -941,6 +1204,7 @@ const ROUTES = [
   }],
 
   ['PUT', /^\/api\/goals$/, (_m, body) => {
+    requireAdmin();
     const period = body.period ?? new Date().toISOString().slice(0, 7);
     const existing = db.goals.find((goal) => goal.user_id === Number(body.user_id) && goal.period === period);
     if (existing) {
@@ -958,19 +1222,18 @@ const ROUTES = [
 
   // --- Чаты imBox ---
   ['GET', /^\/api\/chats$/, (_m, _b, params) => {
-    let items = db.chats;
+    let items = db.chats.filter(inCity(params));
     if (params.q) items = items.filter((chat) => [chat.title, chat.phone].some((value) => like(value, params.q)));
     return {
       items: [...items]
         .sort((a, b) => String(b.last_message_at ?? b.created_at).localeCompare(String(a.last_message_at ?? a.created_at)))
         .map(chatView),
-      channel: { provider: 'demo', ready: false, missing: ['демо-режим: сообщения не уходят наружу'] },
+      channels: db.channels.filter(inCity({})).map(channelView),
     };
   }],
 
   ['GET', /^\/api\/chats\/(\d+)$/, (match) => {
-    const chat = byId(db.chats, match[1]);
-    if (!chat) throw new ApiError(404, 'Переписка не найдена');
+    const chat = visible('chats', match[1], 'Переписка не найдена');
     chat.unread = 0;
     return {
       ...chatView(chat),
@@ -981,8 +1244,14 @@ const ROUTES = [
   }],
 
   ['POST', /^\/api\/chats$/, (_m, body) => {
+    // Писать можно только с номеров своего города (администратор — с любого).
+    const available = db.channels.filter(inCity({}));
+    const channel = body.channel_id ? available.find((item) => item.id === Number(body.channel_id)) : available[0];
+    if (body.channel_id && !channel) throw new ApiError(400, 'Ошибка валидации', { channel_id: 'Номер не найден' });
     const chat = {
       id: db.nextId.chat++, channel: 'whatsapp', external_id: null,
+      channel_id: channel?.id ?? null,
+      city_id: isAdmin() ? (channel?.city_id ?? null) : (session?.city_id ?? null),
       title: body.title ?? body.phone, phone: required(body, 'phone'),
       contact_id: null, deal_id: null, unread: 0,
       last_message_at: null, created_at: now(),
@@ -992,8 +1261,7 @@ const ROUTES = [
   }],
 
   ['POST', /^\/api\/chats\/(\d+)\/messages$/, (match, body) => {
-    const chat = byId(db.chats, match[1]);
-    if (!chat) throw new ApiError(404, 'Переписка не найдена');
+    const chat = visible('chats', match[1], 'Переписка не найдена');
 
     const message = {
       id: db.nextId.message++, chat_id: chat.id, direction: 'out',
@@ -1011,7 +1279,7 @@ const ROUTES = [
 
   // --- Почта ---
   ['GET', /^\/api\/emails$/, (_m, _b, params) => {
-    let items = db.emails;
+    let items = db.emails.filter(inCity(params));
     if (params.direction) items = items.filter((email) => email.direction === params.direction);
     if (params.q) items = items.filter((email) => [email.subject, email.body, email.from_addr, email.to_addr]
       .some((value) => like(value, params.q)));
@@ -1039,30 +1307,28 @@ const ROUTES = [
       deal_id: body.deal_id ? Number(body.deal_id) : null,
       created_at: now(),
     };
+    email.city_id = cityForNew({ linked: linkedCity(email), owner: session });
     db.emails.push(email);
     return { email, delivery: { status: 'pending', error: email.error } };
   }],
 
   ['DELETE', /^\/api\/emails\/(\d+)$/, (match) => {
+    visible('emails', match[1], 'Письмо не найдено');
     db.emails = db.emails.filter((email) => email.id !== Number(match[1]));
     return null;
   }],
 
   // --- Настройки, события, AI ---
-  ['GET', /^\/api\/settings$/, () => ({
+  ['GET', /^\/api\/settings$/, () => (requireAdmin(), {
     settings: {
       smtp_host: db.settings.smtp_host ?? '', smtp_port: db.settings.smtp_port ?? '',
       smtp_secure: db.settings.smtp_secure ?? '', smtp_user: db.settings.smtp_user ?? '',
       smtp_password: Boolean(db.settings.smtp_password), smtp_from: db.settings.smtp_from ?? '',
-      whatsapp_provider: db.settings.whatsapp_provider ?? '',
-      whatsapp_token: Boolean(db.settings.whatsapp_token),
-      whatsapp_phone_id: db.settings.whatsapp_phone_id ?? '',
-      whatsapp_api_url: db.settings.whatsapp_api_url ?? '',
       ai_provider: db.settings.ai_provider ?? '', ai_api_key: Boolean(db.settings.ai_api_key),
       ai_model: db.settings.ai_model ?? '', webhook_secret: Boolean(db.settings.webhook_secret),
     },
     channels: {
-      whatsapp: { provider: 'demo', ready: false, missing: ['демо-режим'] },
+      whatsapp: { count: db.channels.length, ready: false, connected: 0, missing: ['демо-режим'] },
       email: { ready: false, missing: ['демо-режим'], from: 'demo@crm.local', host: null },
     },
     webhooks: {
@@ -1072,12 +1338,13 @@ const ROUTES = [
   })],
 
   ['PATCH', /^\/api\/settings$/, (_m, body) => {
+    requireAdmin();
     Object.assign(db.settings, body);
     return handle('GET', '/api/settings', null, {});
   }],
 
   ['GET', /^\/api\/events$/, (_m, _b, params) => {
-    let items = db.events;
+    let items = db.events.filter(inCity(params));
     if (params.entityType) items = items.filter((event) => event.entity_type === params.entityType);
     if (params.from) items = items.filter((event) => event.created_at.slice(0, 10) >= params.from);
     if (params.to) items = items.filter((event) => event.created_at.slice(0, 10) <= params.to);
@@ -1121,13 +1388,14 @@ const ROUTES = [
     return {
       from: report.from,
       to: report.to,
-      items: db.users.map((user) => {
+      items: db.users.filter(inCity(params)).map((user) => {
         const own = db.deals.filter((deal) => deal.owner_id === user.id);
         const open = own.filter((deal) => stageType(deal) === 'open');
         const won = own.filter((deal) => stageType(deal) === 'won' && inRange(deal.created_at));
         return {
           id: user.id,
           name: user.name,
+          city_name: cityName(user.city_id),
           open_deals: open.length,
           open_amount: open.reduce((sum, deal) => sum + deal.amount, 0),
           new_deals: own.filter((deal) => inRange(deal.created_at)).length,

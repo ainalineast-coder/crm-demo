@@ -1,7 +1,7 @@
 import { api } from '../api.js';
 import { chartLegend, stackedColumns } from '../chart.js';
 import { currentPipeline, pipelineList } from '../pipelines.js';
-import { store } from '../store.js';
+import { cityParam, cityTag, store } from '../store.js';
 import {
   confirmDialog, el, formatDateTime, formatMoney, formatNumber, openForm, seriesColor, toast,
 } from '../ui.js';
@@ -70,6 +70,7 @@ export async function renderAnalytics(root) {
   const tilesBox = el('div', { class: 'grid cols-6' });
   const chartCard = el('div', { class: 'card' });
   const campaignsCard = el('div', { class: 'card' });
+  const citiesCard = el('div', { class: 'card' });
   const manageCard = el('div', { class: 'card' });
   const funnelCard = el('div', { class: 'card' });
   const managersCard = el('div', { class: 'card' });
@@ -97,7 +98,10 @@ export async function renderAnalytics(root) {
     to: state.to,
     ownerId: state.ownerId || undefined,
     tagIds: state.tagIds.size ? [...state.tagIds].join(',') : undefined,
+    cityId: cityParam(),
   });
+  // Период и город — общие для всех отчётов.
+  const rangeParams = () => ({ from: state.from, to: state.to, cityId: cityParam() });
 
   const exportCsv = async () => {
     try {
@@ -320,6 +324,28 @@ export async function renderAnalytics(root) {
           ]))
         : el('div', { class: 'empty', text: 'За выбранный период заявок нет' }),
     );
+
+    // Сравнение городов: видно администратору, когда выбраны все города.
+    citiesCard.hidden = report.byCity.length < 2;
+    citiesCard.replaceChildren(
+      el('div', { class: 'card-head' }, ['Заявки по городам']),
+      el('div', { class: 'table-wrap' }, el('table', {}, [
+        el('thead', {}, [el('tr', {}, [
+          el('th', { text: 'Город' }),
+          ...['Заявок', 'Успешно реализовано', 'Закрыто и не реализовано', 'В работе', 'Конверсия', 'Бюджет успешных']
+            .map((title) => el('th', { class: 'num', text: title })),
+        ])]),
+        el('tbody', {}, report.byCity.map((row) => el('tr', {}, [
+          el('td', {}, el('strong', { text: row.name })),
+          el('td', { class: 'num', text: formatNumber(row.leads) }),
+          el('td', { class: 'num', text: formatNumber(row.won) }),
+          el('td', { class: 'num', text: formatNumber(row.lost) }),
+          el('td', { class: 'num', text: formatNumber(row.inProgress) }),
+          el('td', { class: 'num', text: `${row.conversion}%` }),
+          el('td', { class: 'num', text: formatMoney(row.wonAmount) }),
+        ]))),
+      ])),
+    );
   };
 
   /** Анализ продаж: сколько сделок и денег стоит на каждом этапе воронки. */
@@ -349,7 +375,7 @@ export async function renderAnalytics(root) {
 
   /** Отчёт по сотрудникам: сделки, заявки, примечания и задачи каждого менеджера. */
   const renderManagers = (report) => {
-    const columns = ['Сотрудник', 'Сделок в работе', 'Сумма в работе', 'Новых заявок',
+    const columns = ['Сотрудник', 'Город', 'Сделок в работе', 'Сумма в работе', 'Новых заявок',
       'Успешных', 'Сумма успешных', 'Примечаний', 'Задач в работе'];
 
     managersCard.replaceChildren(
@@ -359,9 +385,10 @@ export async function renderAnalytics(root) {
       ]),
       el('div', { class: 'table-wrap' }, el('table', {}, [
         el('thead', {}, [el('tr', {}, columns.map((title, index) =>
-          el('th', { class: index === 0 ? '' : 'num', text: title })))]),
+          el('th', { class: index < 2 ? '' : 'num', text: title })))]),
         el('tbody', {}, report.items.map((row) => el('tr', {}, [
           el('td', {}, el('strong', { text: row.name })),
+          el('td', { class: 'muted', text: row.city_name ?? 'все города' }),
           el('td', { class: 'num', text: formatNumber(row.open_deals) }),
           el('td', { class: 'num', text: formatMoney(row.open_amount) }),
           el('td', { class: 'num', text: formatNumber(row.new_deals) }),
@@ -458,7 +485,7 @@ export async function renderAnalytics(root) {
         el('thead', {}, [el('tr', {}, ['Сотрудник', 'План, сумма', 'Факт, сумма', 'Выполнение', 'План, сделок', 'Факт, сделок', '']
           .map((title, index) => el('th', { class: index && index < 6 ? 'num' : '', text: title })))]),
         el('tbody', {}, report.items.map((row) => el('tr', {}, [
-          el('td', {}, el('strong', { text: row.name })),
+          el('td', {}, [el('strong', { text: row.name }), cityTag(row)]),
           el('td', { class: 'num', text: row.target_amount ? formatMoney(row.target_amount) : '—' }),
           el('td', { class: 'num', text: formatMoney(row.won_amount) }),
           el('td', {}, el('div', { style: 'display:flex;align-items:center;gap:8px' }, [
@@ -467,7 +494,10 @@ export async function renderAnalytics(root) {
           ])),
           el('td', { class: 'num', text: row.target_count || '—' }),
           el('td', { class: 'num', text: formatNumber(row.won_count) }),
-          el('td', { class: 'actions' }, el('button', { class: 'btn ghost', onclick: () => editGoal(row) }, '✎')),
+          // План ставит администратор.
+          el('td', { class: 'actions' }, store.isAdmin()
+            ? el('button', { class: 'btn ghost', onclick: () => editGoal(row) }, '✎')
+            : null),
         ]))),
       ])),
     );
@@ -478,6 +508,7 @@ export async function renderAnalytics(root) {
     const ENTITIES = {
       deal: 'Сделка', contact: 'Контакт', company: 'Компания', product: 'Товар',
       file: 'Файл', call: 'Звонок', chat: 'Переписка', email: 'Письмо', settings: 'Настройки',
+      city: 'Город', channel: 'Номер WhatsApp',
     };
 
     eventsCard.replaceChildren(
@@ -509,6 +540,7 @@ export async function renderAnalytics(root) {
     campaignFilter.hidden = state.tab !== 'campaigns';
     pipelineSelect.hidden = state.tab !== 'funnel';
     for (const [node, tab] of [[chartCard, 'campaigns'], [campaignsCard, 'campaigns'], [manageCard, 'campaigns'],
+      [citiesCard, 'campaigns'],
       [funnelCard, 'funnel'], [managersCard, 'managers'], [callsCard, 'calls'], [goalsCard, 'goals'],
       [eventsCard, 'events']]) {
       node.hidden = state.tab !== tab;
@@ -520,32 +552,32 @@ export async function renderAnalytics(root) {
     applyTab();
 
     if (state.tab === 'managers') {
-      renderManagers(await api.get('/api/reports/managers', { from: state.from, to: state.to }));
+      renderManagers(await api.get('/api/reports/managers', rangeParams()));
       return;
     }
 
     if (state.tab === 'calls') {
       const [report, recent] = await Promise.all([
-        api.get('/api/calls/report', { from: state.from, to: state.to }),
-        api.get('/api/calls', { from: state.from, to: state.to, limit: 20 }),
+        api.get('/api/calls/report', rangeParams()),
+        api.get('/api/calls', { ...rangeParams(), limit: 20 }),
       ]);
       renderCalls(report, recent.items);
       return;
     }
 
     if (state.tab === 'goals') {
-      renderGoals(await api.get('/api/goals', { period: state.from.slice(0, 7) }));
+      renderGoals(await api.get('/api/goals', { period: state.from.slice(0, 7), cityId: cityParam() }));
       return;
     }
 
     if (state.tab === 'events') {
-      renderEvents(await api.get('/api/events', { from: state.from, to: state.to, limit: 100 }));
+      renderEvents(await api.get('/api/events', { ...rangeParams(), limit: 100 }));
       return;
     }
 
     if (state.tab === 'funnel') {
       const report = await api.get('/api/reports/funnel', {
-        from: state.from, to: state.to,
+        ...rangeParams(),
         ownerId: state.ownerId || undefined,
         pipelineId: state.pipelineId || undefined,
       });
@@ -617,6 +649,7 @@ export async function renderAnalytics(root) {
       eventsCard,
       chartCard,
       campaignsCard,
+      citiesCard,
       manageCard,
     ]),
   );

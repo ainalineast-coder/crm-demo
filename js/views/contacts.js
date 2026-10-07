@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { store } from '../store.js';
+import { cityParam, cityTag, store } from '../store.js';
 import { confirmDialog, contactName, el, openForm, toast } from '../ui.js';
 
 const fields = (options, contact = {}) => [
@@ -38,6 +38,7 @@ export async function renderContacts(root) {
     const { items, total } = await api.get('/api/contacts', {
       q: search.value.trim(),
       companyId: companyFilter.value || undefined,
+      cityId: cityParam(),
     });
     counter.textContent = `Всего: ${total}`;
     tbody.replaceChildren(...(items.length ? items.map((contact) =>
@@ -47,7 +48,7 @@ export async function renderContacts(root) {
         el('td', { text: contact.company_name ?? '—' }),
         el('td', {}, contact.email ? el('a', { href: `mailto:${contact.email}` }, contact.email) : '—'),
         el('td', {}, contact.phone ? el('a', { href: `tel:${contact.phone.replace(/\s/g, '')}` }, contact.phone) : '—'),
-        el('td', { text: contact.owner_name ?? '—' }),
+        el('td', {}, [contact.owner_name ?? '—', cityTag(contact)]),
         el('td', { class: 'actions' }, [
           el('button', { class: 'btn ghost', onclick: () => openContactForm(contact, reload) }, '✎'),
           el('button', { class: 'btn ghost', onclick: async () => {

@@ -1,4 +1,5 @@
 import { api } from '../api.js';
+import { cityParam } from '../store.js';
 import { ACTIVITY_LABELS, el, formatDate, formatDateTime, formatMoney, isOverdue } from '../ui.js';
 
 const tile = (label, value, hint) =>
@@ -29,7 +30,7 @@ const funnel = (byStage) => {
 };
 
 export async function renderDashboard(root) {
-  const data = await api.get('/api/dashboard');
+  const data = await api.get('/api/dashboard', { cityId: cityParam() });
   const { totals } = data;
 
   root.append(

@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { store } from '../store.js';
+import { cityParam, cityTag, store } from '../store.js';
 import { confirmDialog, el, formatDate, openForm, openPanel, toast } from '../ui.js';
 
 const fields = (options, company = {}) => [
@@ -66,7 +66,7 @@ export async function renderCompanies(root) {
   const counter = el('span', { class: 'muted' });
 
   const reload = async () => {
-    const { items, total } = await api.get('/api/companies', { q: search.value.trim() });
+    const { items, total } = await api.get('/api/companies', { q: search.value.trim(), cityId: cityParam() });
     counter.textContent = `Всего: ${total}`;
     tbody.replaceChildren(...(items.length ? items.map((company) =>
       el('tr', {}, [
@@ -75,7 +75,7 @@ export async function renderCompanies(root) {
         el('td', { text: company.industry ?? '—' }),
         el('td', { text: company.phone ?? '—' }),
         el('td', { text: `${company.contacts_count} / ${company.deals_count}` }),
-        el('td', { text: company.owner_name ?? '—' }),
+        el('td', {}, [company.owner_name ?? '—', cityTag(company)]),
         el('td', { class: 'muted', text: formatDate(company.created_at) }),
         el('td', { class: 'actions' }, [
           el('button', { class: 'btn ghost', onclick: () => openCompanyForm(company, reload) }, '✎'),

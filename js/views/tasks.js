@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { store } from '../store.js';
+import { cityParam, cityTag, store } from '../store.js';
 import { PRIORITY_LABELS, confirmDialog, el, formatDate, initials, isOverdue, openForm, toast } from '../ui.js';
 
 const DAY = 86_400_000;
@@ -15,7 +15,7 @@ const PERIODS = [
 
 const fields = async (task = {}) => {
   const options = await store.options();
-  const deals = (await api.get('/api/deals', { limit: 200 })).items;
+  const deals = (await api.get('/api/deals', { limit: 200, cityId: cityParam() })).items;
   return [
     { name: 'title', label: 'Название', required: true, value: task.title, width: 'full' },
     { name: 'due_date', label: 'Срок', type: 'date', value: task.due_date ?? today() },
@@ -81,6 +81,7 @@ export async function renderTasks(root) {
         el('div', { style: 'flex:1;min-width:0' }, [
           el('div', { class: 'title', onclick: () => openTaskForm(task, reload), text: task.title }),
           task.deal_title ? el('div', { class: 'who', text: task.deal_title }) : null,
+          cityTag(task),
         ]),
       ]),
       el('div', { class: 'row' }, [
@@ -126,7 +127,7 @@ export async function renderTasks(root) {
           ]),
           el('td', { class: isOverdue(task.due_date, task.done) ? 'overdue' : '' }, formatDate(task.due_date)),
           el('td', {}, el('span', { class: `badge prio-${task.priority}` }, PRIORITY_LABELS[task.priority])),
-          el('td', { text: task.assignee_name ?? '—' }),
+          el('td', {}, [task.assignee_name ?? '—', cityTag(task)]),
           el('td', { class: 'actions' }, [
             el('button', { class: 'btn ghost', onclick: () => openTaskForm(task, reload) }, '✎'),
             el('button', { class: 'btn ghost', onclick: () => removeTask(task) }, '🗑'),
@@ -140,6 +141,7 @@ export async function renderTasks(root) {
     const { items, total } = await api.get('/api/tasks', {
       q: search.value.trim() || undefined,
       assigneeId: assigneeSelect.value || undefined,
+      cityId: cityParam(),
       limit: 200,
     });
     counter.textContent = `${total} задач`;

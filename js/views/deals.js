@@ -3,7 +3,7 @@ import {
   LEAD_TYPE_LABELS, currentPipeline, findStage, loadPipelines, pipelineList,
   setCurrentPipeline, stageOptions, stagesOf,
 } from '../pipelines.js';
-import { store } from '../store.js';
+import { cityParam, cityTag, store } from '../store.js';
 import {
   ACTIVITY_LABELS, confirmDialog, el, formatDate, formatDateTime, formatMoney,
   initials, openForm, openPanel, seriesColor, tagChip, toast,
@@ -68,7 +68,7 @@ function tagPicker(tags, selectedIds) {
 }
 
 export async function openDealForm(deal, onDone, pipelineId) {
-  const [options, tags] = await Promise.all([store.options(), store.tags()]);
+  const [options, tags, cities] = await Promise.all([store.options(), store.tags(), store.cities()]);
   const picker = tagPicker(tags, (deal?.tags ?? []).map((tag) => tag.id));
   const isEdit = Boolean(deal);
   const pipeline = deal?.pipeline_id ?? pipelineId ?? currentPipeline()?.id;
@@ -82,6 +82,13 @@ export async function openDealForm(deal, onDone, pipelineId) {
     { name: 'currency', label: 'Валюта', type: 'select', value: deal?.currency ?? 'KZT',
       options: CURRENCIES.map((code) => ({ value: code, label: code })) },
     { name: 'owner_id', label: 'Ответственный', type: 'select', value: deal?.owner_id, options: options.users },
+    // Город выбирает администратор; не указан — сделка уходит в город ответственного.
+    // Менеджер всегда работает в своём городе, поле ему не нужно.
+    store.isAdmin()
+      ? { name: 'city_id', label: 'Город', type: 'select', value: deal ? deal.city_id : store.cityId,
+          options: [{ value: '', label: isEdit ? '— без города —' : '— как у ответственного —' }]
+            .concat(cities.map((city) => ({ value: city.id, label: city.name }))) }
+      : null,
     { name: 'expected_close_date', label: 'Ожидаемое закрытие', type: 'date', value: deal?.expected_close_date },
   ];
 
@@ -107,9 +114,15 @@ export async function openDealForm(deal, onDone, pipelineId) {
 
   openForm({
     title: isEdit ? 'Редактирование сделки' : 'Новая сделка',
-    fields,
+    fields: fields.filter(Boolean),
     onSubmit: async (values) => {
       const payload = { ...values, pipeline_id: pipeline };
+      // Город отправляем, только если его действительно выбрали или поменяли:
+      // иначе смена ответственного сама переносит сделку в его город.
+      const cityChanged = isEdit
+        ? String(payload.city_id ?? '') !== String(deal.city_id ?? '')
+        : payload.city_id !== null && payload.city_id !== undefined;
+      if (!cityChanged) delete payload.city_id;
       const first = payload.contact_first_name;
       const last = payload.contact_last_name;
       const phone = payload.contact_phone;
@@ -307,6 +320,7 @@ export async function openDealDetails(id, onDone) {
         info('Клиент', deal.contact_name || deal.company_name),
         info('Телефон', deal.contact_phone),
         info('Ответственный', deal.owner_name),
+        info('Город', deal.city_name),
         info('Ожидаемое закрытие', formatDate(deal.expected_close_date)),
         info('Создана', formatDateTime(deal.created_at)),
       ]),
@@ -520,6 +534,7 @@ export async function renderDeals(root, params = {}) {
       ownerId: ownerSelect.value || undefined,
       leadType: typeSelect.value || undefined,
       tagIds: tagSelect.value || undefined,
+      cityId: cityParam(),
       q: search.value.trim() || undefined,
     });
     board.replaceChildren(...data.stages.map((stage) => renderColumn(stage, reload)));
@@ -558,8 +573,13 @@ export async function renderDeals(root, params = {}) {
       ]),
       el('div', { class: 'toolbar' }, [
         search, typeSelect, tagSelect, ownerSelect,
-        el('button', { class: 'btn secondary', onclick: () => openPipelineSettings(currentPipeline(), refresh) }, 'НАСТРОИТЬ'),
-        el('button', { class: 'btn secondary', title: 'Добавить воронку', onclick: () => openPipelineForm(refresh) }, '+ ВОРОНКА'),
+        // Воронки общие для всех городов — перестраивает их администратор.
+        store.isAdmin()
+          ? el('button', { class: 'btn secondary', onclick: () => openPipelineSettings(currentPipeline(), refresh) }, 'НАСТРОИТЬ')
+          : null,
+        store.isAdmin()
+          ? el('button', { class: 'btn secondary', title: 'Добавить воронку', onclick: () => openPipelineForm(refresh) }, '+ ВОРОНКА')
+          : null,
         el('button', { class: 'btn', onclick: () => openDealForm(null, reload, currentPipeline()?.id) }, '+ НОВАЯ СДЕЛКА'),
       ]),
     ]),
@@ -617,6 +637,7 @@ function renderCard(deal, reload) {
     el('div', { class: 'who', text: client + (deal.contact_phone ? ` · ${deal.contact_phone}` : '') }),
     el('div', { class: 'amount', text: formatMoney(deal.amount, deal.currency) }),
     deal.tags.length ? el('div', { class: 'tag-list', style: 'margin-top:6px' }, deal.tags.map((tag) => tagChip(tag))) : null,
+    cityTag(deal),
     el('div', { class: 'row' }, [
       el('span', { class: 'muted', style: 'font-size:11px', text: formatDate(deal.expected_close_date) }),
       el('span', { class: 'owner', title: deal.owner_name ?? '', text: initials(deal.owner_name) }),

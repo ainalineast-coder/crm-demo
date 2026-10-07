@@ -1,4 +1,5 @@
 import { api } from '../api.js';
+import { cityParam } from '../store.js';
 import { confirmDialog, el, formatDateTime, openForm, toast } from '../ui.js';
 
 /** Почта: список писем и отправка нового. */
@@ -30,6 +31,7 @@ export async function renderEmails(root) {
     const { items, total, mailbox } = await api.get('/api/emails', {
       q: search.value.trim() || undefined,
       direction: state.direction || undefined,
+      cityId: cityParam(),
     });
 
     statusBadge.textContent = mailbox.ready
