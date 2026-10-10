@@ -121,7 +121,9 @@ const inScope = (section, params = {}) => (row) => {
   if (!row) return false;
   const { level, scope } = access(section);
   if (level === 'none') return false;
-  if (scope === 'all' || SECTIONS[section].global) return requestedCity(params)(row);
+  if (SECTIONS[section].global || isAdmin()) return requestedCity(params)(row);
+  // «Все города» — записи городов; общие записи без города (номер владельца) — только администратору.
+  if (scope === 'all') return (row.city_id ?? null) !== null && requestedCity(params)(row);
   if (scope === 'city') return (row.city_id ?? null) === (session?.city_id ?? null);
   return OWN[section](row);
 };
@@ -138,9 +140,11 @@ const peopleIn = (section, params = {}) => (user) => {
 const usersIn = (params = {}) => (user) => (seesAllCities()
   ? requestedCity(params)(user)
   : (user.city_id ?? null) === (session?.city_id ?? null));
-const channelsIn = (params = {}) => (channel) => (isAdmin() || access('chats').scope === 'all'
-  ? requestedCity(params)(channel)
-  : (channel.city_id ?? null) === (session?.city_id ?? null));
+const channelsIn = (params = {}) => (channel) => {
+  if (isAdmin()) return requestedCity(params)(channel);
+  if (access('chats').scope === 'all') return (channel.city_id ?? null) !== null && requestedCity(params)(channel);
+  return (channel.city_id ?? null) === (session?.city_id ?? null);
+};
 const visible = (section, id, message = 'Не найдено') => {
   const row = byId(db[section], id);
   if (!inScope(section)(row)) throw new ApiError(404, message);

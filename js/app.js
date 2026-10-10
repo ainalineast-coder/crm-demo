@@ -14,6 +14,8 @@ import { renderSettings } from './views/settings.js';
 import { renderTasks } from './views/tasks.js';
 
 const appRoot = document.getElementById('app');
+// Путь без ведущего «/»: так логотип находится и в CRM, и в демо-витрине на GitHub Pages.
+const LOGO = 'img/beyosa-logo.png';
 
 // Разделы — как в левом меню amoCRM.
 // byCity — раздел показывает данные по городам (кому видны все города, есть переключатель);
@@ -59,7 +61,7 @@ function renderShell() {
 
   const layout = el('div', { class: 'layout' }, [
     el('aside', { class: 'rail' }, [
-      el('div', { class: 'logo', text: 'CRM' }),
+      el('a', { class: 'logo', href: '#/dashboard', title: 'Beyosa CRM' }, el('img', { src: LOGO, alt: 'Beyosa' })),
       nav,
       el('div', { class: 'spacer' }),
       el('div', { class: 'me', title: store.user.role_name ?? '' }, [
@@ -180,7 +182,8 @@ function renderLogin(message) {
   clear(appRoot).append(el('div', { class: 'login-wrap' }, [
     el('div', { class: 'card login' }, [
       el('div', { class: 'card-body' }, [
-        el('h1', { text: 'Вход в CRM' }),
+        el('img', { class: 'login-logo', src: LOGO, alt: 'Beyosa' }),
+        el('h1', { text: 'Вход в Beyosa CRM' }),
         el('div', { class: 'hint', text: message ?? 'Демо-доступ: admin@crm.local / admin12345' }),
         form,
       ]),

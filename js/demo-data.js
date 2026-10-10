@@ -27,8 +27,11 @@ function random(seed) {
 const CITIES = [
   { id: 1, name: 'Минск', phoneCode: '+375 29 ', whatsapp: '+375 29 100-20-30' },
   { id: 2, name: 'Караганда', phoneCode: '+7 7', whatsapp: '+7 721 250-30-40' },
-  { id: 3, name: 'Алматы', phoneCode: '+7 7', whatsapp: '+7 727 350-40-50' },
+  { id: 3, name: 'Алматы', phoneCode: '+7 7', whatsapp: '+7 701 191 6495' },
 ];
+
+// Номер владельца: без города, переписку на нём видит только администратор.
+const OWNER_WHATSAPP = { name: 'WhatsApp владельца', phone: '+7 708 641 9548' };
 
 // Администратор видит всё; остальным права даёт роль (1 — менеджер города, 2 — стажёр,
 // 3 — руководитель: все города, только просмотр). leads — ведёт демо-заявки.
@@ -158,9 +161,11 @@ export function buildDataset() {
     pipelines: [],
     stages: [],
     cities: CITIES.map(({ id, name }, index) => ({ id, name, position: index, created_at: stamp(-90, 10) })),
-    channels: CITIES.map((city) => ({
-      id: city.id, name: `WhatsApp ${city.name}`, phone: city.whatsapp, city_id: city.id,
-      provider: 'none', phone_id: null, api_url: null, has_token: false, active: 1, created_at: stamp(-90, 10),
+    channels: [
+      ...CITIES.map((city) => ({ id: city.id, name: `WhatsApp ${city.name}`, phone: city.whatsapp, city_id: city.id })),
+      { id: CITIES.length + 1, ...OWNER_WHATSAPP, city_id: null },
+    ].map((channel) => ({
+      ...channel, provider: 'none', phone_id: null, api_url: null, has_token: false, active: 1, created_at: stamp(-90, 10),
     })),
     roles: DEFAULT_ROLES.map((role, index) => ({
       id: index + 1, name: role.name, permissions: normalizePermissions(role.permissions), created_at: stamp(-90, 10),
@@ -188,7 +193,7 @@ export function buildDataset() {
     nextId: {
       company: 1, contact: 1, deal: 1, tag: TAGS.length + 1, task: 1, activity: 1,
       pipeline: 1, stage: 1, product: 1, item: 1, file: 1, call: 1, goal: 1,
-      chat: 1, message: 1, email: 1, event: 1, city: CITIES.length + 1, channel: CITIES.length + 1,
+      chat: 1, message: 1, email: 1, event: 1, city: CITIES.length + 1, channel: CITIES.length + 2,
       user: USERS.length + 1, role: DEFAULT_ROLES.length + 1,
     },
   };
