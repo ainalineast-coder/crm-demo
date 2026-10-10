@@ -88,6 +88,7 @@ export async function renderSettings(root) {
   const ADMIN_LABEL = 'Администратор — всё, все города';
   const PROVIDERS = [
     { value: 'none', label: 'Не подключён' },
+    { value: 'wazzup', label: 'Wazzup' },
     { value: 'meta', label: 'WhatsApp Cloud API (Meta)' },
     { value: 'custom', label: 'Другой шлюз (HTTP)' },
   ];
@@ -297,7 +298,44 @@ export async function renderSettings(root) {
   ]);
 
   /** Номера WhatsApp: у каждого города свой номер и свой шлюз. */
-  const channelForm = (channel, cities) => openForm({
+  /** Поиск номеров в аккаунте Wazzup: выбор номера заполняет ID канала. */
+  const wazzupPicker = (channel) => {
+    const list = el('div', { style: 'display:flex;gap:6px;flex-wrap:wrap' });
+    const find = async (event) => {
+      const form = event.target.closest('form');
+      const token = form.querySelector('input[name=token]').value.trim();
+      event.target.disabled = true;
+      try {
+        const { items } = await api.post('/api/channels/wazzup/channels', token ? { token } : { channel_id: channel?.id });
+        list.replaceChildren(...(items.length ? items.map((item) => el('button', {
+          type: 'button', class: 'btn chip',
+          onclick: (choice) => {
+            form.querySelector('input[name=phone_id]').value = item.channelId;
+            const phone = form.querySelector('input[name=phone]');
+            if (!phone.value && item.phone) phone.value = `+${item.phone}`;
+            for (const chip of list.children) chip.classList.toggle('on', chip === choice.currentTarget);
+          },
+        }, `${item.phone ? `+${item.phone}` : item.channelId}${item.state && item.state !== 'active' ? ` (${item.state})` : ''}`))
+          : [el('span', { class: 'muted', text: 'В аккаунте Wazzup нет номеров WhatsApp' })]));
+      } catch (error) {
+        const message = error.details ? Object.values(error.details).join('. ') : error.message;
+        list.replaceChildren(el('span', { style: 'color:var(--red)', text: message }));
+      } finally {
+        event.target.disabled = false;
+      }
+    };
+    return {
+      node: el('div', { style: 'display:grid;gap:6px' }, [
+        el('div', {}, el('button', { type: 'button', class: 'btn secondary', onclick: find }, 'Найти номера в аккаунте Wazzup')),
+        list,
+      ]),
+      read: () => undefined,
+    };
+  };
+
+  const channelForm = (channel, cities) => {
+    const picker = wazzupPicker(channel);
+    return openForm({
     title: channel ? `Номер — ${channel.name}` : 'Новый номер WhatsApp',
     fields: [
       { name: 'name', label: 'Название', required: true, value: channel?.name ?? '', width: 'full' },
@@ -305,14 +343,17 @@ export async function renderSettings(root) {
       { name: 'city_id', label: 'Город', type: 'select', value: channel?.city_id ?? '',
         options: cityOptions(cities, '— общий, только администратору —') },
       { name: 'provider', label: 'Шлюз', type: 'select', value: channel?.provider ?? 'none', options: PROVIDERS },
-      { name: 'phone_id', label: 'Идентификатор номера (phone_number_id)', value: channel?.phone_id },
-      { name: 'token', label: channel?.has_token ? 'Токен доступа (сохранён — введите новый, чтобы заменить)' : 'Токен доступа',
-        type: 'password' },
-      { name: 'api_url', label: 'Адрес API', value: channel?.api_url, width: 'full' },
+      { name: 'token', label: channel?.has_token
+        ? 'Ключ API Wazzup или токен Meta (сохранён — введите новый, чтобы заменить)'
+        : 'Ключ API Wazzup или токен Meta', type: 'password' },
+      { name: 'phone_id', label: 'ID канала Wazzup или phone_number_id Meta', value: channel?.phone_id },
+      { name: 'wazzup', label: 'Для Wazzup: введите ключ и выберите номер', type: 'custom', width: 'full',
+        node: picker.node, read: picker.read },
+      { name: 'api_url', label: 'Адрес API (только для своего шлюза)', value: channel?.api_url, width: 'full' },
       channel ? { name: 'active', label: 'Номер включён', type: 'checkbox', value: Boolean(channel.active) } : null,
     ].filter(Boolean),
     onSubmit: async (values) => {
-      const payload = { ...values };
+      const { wazzup, ...payload } = values;
       if (!payload.token) delete payload.token;
       if (channel) await api.patch(`/api/channels/${channel.id}`, payload);
       else await api.post('/api/channels', payload);
@@ -320,7 +361,21 @@ export async function renderSettings(root) {
       store.invalidate('cities');
       await reload();
     },
-  });
+    });
+  };
+
+  /** Wazzup сам не знает адрес CRM — сообщаем его одной кнопкой. */
+  const connectWazzup = async (channel, button) => {
+    button.disabled = true;
+    try {
+      await api.post(`/api/channels/${channel.id}/wazzup/webhook`, {});
+      toast('Приём сообщений из Wazzup подключён');
+    } catch (error) {
+      toast(error.message, 'error');
+    } finally {
+      button.disabled = false;
+    }
+  };
 
   const channelsCard = (channels, cities) => el('div', { class: 'card' }, [
     el('div', { class: 'card-head' }, [
@@ -328,15 +383,19 @@ export async function renderSettings(root) {
       el('button', { class: 'btn', onclick: () => channelForm(null, cities) }, '+ Номер'),
     ]),
     el('div', { class: 'card-body', style: 'display:grid;gap:14px' }, [
-      el('div', { class: 'muted', text: 'Сообщения, пришедшие на номер, попадают в imBox его города. Ответ клиенту уходит с того же номера. Для каждого номера укажите у провайдера свой адрес вебхука.' }),
+      el('div', { class: 'muted', text: 'Сообщения, пришедшие на номер, попадают в imBox его города, ответ клиенту уходит с того же номера. Wazzup: в карточке номера (✎) выберите шлюз Wazzup, введите ключ API, найдите и выберите номер, сохраните и нажмите «Подключить приём сообщений». Meta или свой шлюз: укажите у провайдера адрес вебхука номера.' }),
       ...(channels.length ? channels.map((channel) => el('div', { class: 'channel-row' }, [
         el('div', { style: 'display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center' }, [
           el('div', {}, [
             el('strong', { text: channel.name }),
             el('span', { class: 'muted', text: ` · ${channel.phone ?? 'номер не указан'} · ${channel.city_name ?? 'общий номер'}` }),
           ]),
-          el('div', { style: 'display:flex;gap:6px;align-items:center' }, [
+          el('div', { style: 'display:flex;gap:6px;align-items:center;flex-wrap:wrap' }, [
             statusBadge(channel.status),
+            channel.provider === 'wazzup' && channel.has_token
+              ? el('button', { class: 'btn secondary', title: 'Wazzup будет присылать входящие сообщения в CRM',
+                  onclick: (event) => connectWazzup(channel, event.currentTarget) }, 'Подключить приём сообщений')
+              : null,
             el('button', { class: 'btn ghost', title: 'Изменить', onclick: () => channelForm(channel, cities) }, '✎'),
             el('button', { class: 'btn ghost', title: 'Удалить номер', onclick: async () => {
               if (!await confirmDialog(`Удалить номер «${channel.name}»? Переписки останутся.`)) return;

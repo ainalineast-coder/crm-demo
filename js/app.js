@@ -144,14 +144,38 @@ async function route() {
   if (current === navigationId && store.user) shell.view.replaceChildren(view);
 }
 
-function renderLogin(message) {
-  shell = null;
-  appRoot.className = '';
+/** Вход выполнен: загружаем справочники и открываем CRM. */
+async function enter(user) {
+  store.user = user;
+  store.invalidate();
+  await Promise.all([loadPipelines(), loadCities()]);
+  if (!location.hash) location.hash = '#/dashboard';
+  await route();
+  toast(`Добро пожаловать, ${user.name}`);
+}
 
-  const email = el('input', { type: 'email', name: 'email', required: 'required', autocomplete: 'username' });
-  const password = el('input', { type: 'password', name: 'password', required: 'required', autocomplete: 'current-password' });
+/** Карточка экрана входа с логотипом. */
+function loginCard(title, hint, form) {
+  clear(appRoot).append(el('div', { class: 'login-wrap' }, [
+    el('div', { class: 'card login' }, [
+      el('div', { class: 'card-body' }, [
+        el('img', { class: 'login-logo', src: LOGO, alt: 'Beyosa' }),
+        el('h1', { text: title }),
+        el('div', { class: 'hint', text: hint }),
+        form,
+      ]),
+    ]),
+  ]));
+}
+
+/** Форма с полями и одной кнопкой: ошибки показываются под полями. */
+function authForm(fields, submitLabel, onSubmit) {
   const error = el('div', { style: 'color:var(--red);font-size:12px' });
-  const submit = el('button', { class: 'btn', type: 'submit' }, 'Войти');
+  const submit = el('button', { class: 'btn', type: 'submit' }, submitLabel);
+  const inputs = fields.map((field) => ({
+    ...field,
+    input: el('input', { type: field.type ?? 'text', name: field.name, required: 'required', autocomplete: field.autocomplete }),
+  }));
 
   const form = el('form', {
     onsubmit: async (event) => {
@@ -159,38 +183,64 @@ function renderLogin(message) {
       error.textContent = '';
       submit.disabled = true;
       try {
-        const { user } = await api.post('/api/auth/login', { email: email.value, password: password.value });
-        store.user = user;
-        store.invalidate();
-        await Promise.all([loadPipelines(), loadCities()]);
-        if (!location.hash) location.hash = '#/dashboard';
-        await route();
-        toast(`Добро пожаловать, ${user.name}`);
+        await onSubmit(Object.fromEntries(inputs.map(({ name, input }) => [name, input.value])));
       } catch (err) {
-        error.textContent = err.message;
+        error.textContent = err.details ? Object.values(err.details).join('. ') : err.message;
       } finally {
         submit.disabled = false;
       }
     },
   }, [
-    el('div', { class: 'field' }, [el('label', { text: 'Email' }), email]),
-    el('div', { class: 'field' }, [el('label', { text: 'Пароль' }), password]),
+    ...inputs.map(({ label, input }) => el('div', { class: 'field' }, [el('label', { text: label }), input])),
     error,
     submit,
   ]);
+  return { form, focus: () => inputs[0].input.focus() };
+}
 
-  clear(appRoot).append(el('div', { class: 'login-wrap' }, [
-    el('div', { class: 'card login' }, [
-      el('div', { class: 'card-body' }, [
-        el('img', { class: 'login-logo', src: LOGO, alt: 'Beyosa' }),
-        el('h1', { text: 'Вход в Beyosa CRM' }),
-        el('div', { class: 'hint', text: message ?? 'Демо-доступ: admin@crm.local / admin12345' }),
-        form,
-      ]),
-    ]),
-  ]));
+/** Первый запуск рабочей CRM: пользователей ещё нет — создаём владельца. */
+function renderSetup() {
+  const { form, focus } = authForm([
+    { name: 'name', label: 'Ваше имя', autocomplete: 'name' },
+    { name: 'email', label: 'Email для входа', type: 'email', autocomplete: 'username' },
+    { name: 'password', label: 'Пароль (не короче 8 символов)', type: 'password', autocomplete: 'new-password' },
+    { name: 'repeat', label: 'Пароль ещё раз', type: 'password', autocomplete: 'new-password' },
+  ], 'Создать и войти', async (values) => {
+    if (values.password !== values.repeat) throw new Error('Пароли не совпадают');
+    const { user } = await api.post('/api/auth/register', {
+      name: values.name, email: values.email, password: values.password,
+    });
+    await enter(user);
+  });
 
-  email.focus();
+  loginCard('Первый запуск Beyosa CRM',
+    'Создайте учётную запись владельца — администратора со всеми правами. Сотрудников добавите потом в «Настройках».',
+    form);
+  focus();
+}
+
+async function renderLogin(message) {
+  shell = null;
+  appRoot.className = '';
+
+  let status = { needsSetup: false, demo: false };
+  try {
+    status = await api.get('/api/auth/status');
+  } catch { /* сервер недоступен — покажем обычный вход */ }
+  if (status.needsSetup) return renderSetup();
+
+  const { form, focus } = authForm([
+    { name: 'email', label: 'Email', type: 'email', autocomplete: 'username' },
+    { name: 'password', label: 'Пароль', type: 'password', autocomplete: 'current-password' },
+  ], 'Войти', async (values) => {
+    const { user } = await api.post('/api/auth/login', values);
+    await enter(user);
+  });
+
+  const hint = message
+    ?? (status.demo ? 'Демо-доступ: admin@crm.local / admin12345' : 'Войдите под своим email и паролем');
+  loginCard('Вход в Beyosa CRM', hint, form);
+  focus();
 }
 
 setUnauthorizedHandler(() => {

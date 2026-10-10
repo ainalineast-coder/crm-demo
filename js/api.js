@@ -522,6 +522,7 @@ const ROUTES = [
     return { user: userView(user), token: 'demo' };
   }],
   ['POST', /^\/api\/auth\/logout$/, () => { session = null; return null; }],
+  ['GET', /^\/api\/auth\/status$/, () => ({ needsSetup: false, demo: true })],
 
   ['GET', /^\/api\/users$/, (_m, _b, params) => ({
     items: db.users.filter(usersIn(params)).map(userView).sort((a, b) => a.name.localeCompare(b.name)),
@@ -672,6 +673,16 @@ const ROUTES = [
       for (const chat of db.chats) if (chat.channel_id === channel.id) chat.city_id = channel.city_id;
     }
     return channelView(channel);
+  }],
+
+  ['POST', /^\/api\/channels\/wazzup\/channels$/, () => {
+    requireAdmin();
+    throw new ApiError(400, 'В демо Wazzup не подключается — в рабочей CRM здесь появятся номера из вашего аккаунта Wazzup');
+  }],
+
+  ['POST', /^\/api\/channels\/(\d+)\/wazzup\/webhook$/, () => {
+    requireAdmin();
+    throw new ApiError(400, 'В демо Wazzup не подключается — в рабочей CRM кнопка включает приём сообщений');
   }],
 
   ['DELETE', /^\/api\/channels\/(\d+)$/, (match) => {
