@@ -45,8 +45,8 @@ const INSTAGRAM_LEADS = [
 // 1 — менеджер «свои и свободные заявки», 4 — стажёр). leads — ведёт демо-заявки.
 // demoLabel — подпись в переключателе «Смотреть как».
 export const USERS = [
-  { id: 1, name: 'Жанна', email: 'admin@crm.local', role: 'admin', city_id: null, role_id: null, active: 1,
-    demoLabel: 'общий доступ: все города, Instagram, настройки' },
+  { id: 1, name: 'Карина', email: 'admin@crm.local', role: 'admin', city_id: null, role_id: null, active: 1,
+    demoLabel: 'админ / мультименеджер: все города, Instagram, настройки' },
   { id: 2, name: 'Ольга Тихонова', email: 'olga@crm.local', role: 'manager', city_id: 1, role_id: 1, active: 1,
     leads: true, demoLabel: 'менеджер Караганды' },
   { id: 3, name: 'Тимур Нурпеисов', email: 'timur@crm.local', role: 'manager', city_id: 1, role_id: 1, active: 1,

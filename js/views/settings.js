@@ -85,7 +85,7 @@ export async function renderSettings(root) {
 
   const save = (values) => api.patch('/api/settings', values);
 
-  const ADMIN_LABEL = 'Администратор — всё, все города';
+  const ADMIN_LABEL = 'Админ / мультименеджер — всё, все города';
   const PROVIDERS = [
     { value: 'none', label: 'Не подключён' },
     { value: 'wazzup', label: 'Wazzup' },
