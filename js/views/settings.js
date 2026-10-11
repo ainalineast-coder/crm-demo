@@ -449,6 +449,9 @@ export async function renderSettings(root) {
     return item.kind === 'instagram' ? `@${item.phone}` : item.phone;
   };
 
+  // «+7 701 191 6495», «77011916495», «@beyosa_almaty» и «beyosa_almaty» — один и тот же канал.
+  const sameAccount = (value) => String(value).toLowerCase().replace(/^@/, '').replace(/[\s()+-]/g, '');
+
   /** Поиск каналов в аккаунте Wazzup: выбор канала заполняет его ID и мессенджер. */
   const wazzupPicker = (channel) => {
     const list = el('div', { style: 'display:flex;gap:6px;flex-wrap:wrap' });
@@ -458,17 +461,25 @@ export async function renderSettings(root) {
       event.target.disabled = true;
       try {
         const { items } = await api.post('/api/channels/wazzup/channels', token ? { token } : { channel_id: channel?.id });
-        list.replaceChildren(...(items.length ? items.map((item) => el('button', {
-          type: 'button', class: 'btn chip',
-          onclick: (choice) => {
-            form.querySelector('input[name=phone_id]').value = item.channelId;
-            form.querySelector('select[name=kind]').value = item.kind ?? 'whatsapp';
-            const phone = form.querySelector('input[name=phone]');
-            if (!phone.value && item.phone) phone.value = accountOf(item);
-            for (const chip of list.children) chip.classList.toggle('on', chip === choice.currentTarget);
-          },
-        }, `${KIND_ICONS[item.kind] ?? ''} ${accountOf(item)}${item.state && item.state !== 'active' ? ` (${item.state})` : ''}`))
+        const choose = (item, chosen) => {
+          form.querySelector('input[name=phone_id]').value = item.channelId;
+          form.querySelector('select[name=kind]').value = item.kind ?? 'whatsapp';
+          const phone = form.querySelector('input[name=phone]');
+          if (!phone.value && item.phone) phone.value = accountOf(item);
+          for (const chip of list.children) chip.classList.toggle('on', chip === chosen);
+        };
+        const chips = items.map((item) => {
+          const chip = el('button', { type: 'button', class: 'btn chip', onclick: () => choose(item, chip) },
+            `${KIND_ICONS[item.kind] ?? ''} ${accountOf(item)}${item.state && item.state !== 'active' ? ` (${item.state})` : ''}`);
+          return chip;
+        });
+        list.replaceChildren(...(chips.length ? chips
           : [el('span', { class: 'muted', text: 'В аккаунте Wazzup нет каналов WhatsApp, Instagram или Telegram' })]));
+        // Номер или @аккаунт канала уже указан — сразу выбираем совпадающий канал Wazzup,
+        // чтобы не перепутать Instagram Алматы и Караганды.
+        const wanted = sameAccount(form.querySelector('input[name=phone]').value);
+        const match = wanted ? items.findIndex((item) => sameAccount(item.phone ?? '') === wanted) : -1;
+        if (match >= 0) choose(items[match], chips[match]);
       } catch (error) {
         const message = error.details ? Object.values(error.details).join('. ') : error.message;
         list.replaceChildren(el('span', { style: 'color:var(--red)', text: message }));

@@ -26,18 +26,17 @@ function random(seed) {
 // Города (филиалы): у каждого свои менеджеры, свой номер WhatsApp и свои заявки.
 // Минск — возможно, позже: город добавляется в «Настройках».
 const CITIES = [
-  { id: 1, name: 'Караганда', whatsapp: '+7 702 412 2597' },
-  { id: 2, name: 'Алматы', whatsapp: '+7 701 191 6495' },
+  { id: 1, name: 'Караганда', whatsapp: '+7 702 412 2597', instagram: '@beyosa_karaganda' },
+  { id: 2, name: 'Алматы', whatsapp: '+7 701 191 6495', instagram: '@beyosa_almaty' },
 ];
 
 // Номер владельца: без города, переписку на нём видит только администратор.
 const OWNER_WHATSAPP = { name: 'WhatsApp владельца', phone: '+7 708 641 9548' };
 
-// Общий Instagram без города: заявки из него видит владелец и передаёт нужному городу.
-const INSTAGRAM = { name: 'Instagram Beyosa', kind: 'instagram', phone: null };
+// У каждого города свой Instagram: заявка из него сразу свободная в этом городе.
 const INSTAGRAM_LEADS = [
-  { name: 'Мадина', chatId: 'madina.home', text: 'Здравствуйте! Есть доставка в Караганду? Интересует матрас 160×200' },
-  { name: 'Арман', chatId: 'arman_k', text: 'Сколько стоит кровать с подъёмным механизмом?' },
+  { cityId: 1, name: 'Мадина', chatId: 'madina.home', text: 'Здравствуйте! Есть доставка по Караганде? Интересует матрас 160×200' },
+  { cityId: 2, name: 'Арман', chatId: 'arman_k', text: 'Сколько стоит кровать с подъёмным механизмом?' },
 ];
 
 // Как в Beyosa: 4 менеджера в Алматы, 2 в Караганде, общий доступ — у одного человека.
@@ -178,7 +177,9 @@ export function buildDataset() {
     channels: [
       ...CITIES.map((city) => ({ id: city.id, name: `WhatsApp ${city.name}`, phone: city.whatsapp, city_id: city.id })),
       { id: CITIES.length + 1, ...OWNER_WHATSAPP, city_id: null },
-      { id: CITIES.length + 2, ...INSTAGRAM, city_id: null },
+      ...CITIES.map((city, index) => ({
+        id: CITIES.length + 2 + index, name: `Instagram ${city.name}`, kind: 'instagram', phone: city.instagram, city_id: city.id,
+      })),
     ].map((channel) => ({
       kind: 'whatsapp', ...channel, provider: 'none', phone_id: null, api_url: null, has_token: false, active: 1, created_at: stamp(-90, 10),
     })),
@@ -215,7 +216,7 @@ export function buildDataset() {
     nextId: {
       company: 1, contact: 1, deal: 1, tag: TAGS.length + 1, task: 1, activity: 1,
       pipeline: 1, stage: 1, product: 1, item: 1, file: 1, call: 1, goal: 1,
-      chat: 1, message: 1, email: 1, event: 1, city: CITIES.length + 1, channel: CITIES.length + 3,
+      chat: 1, message: 1, email: 1, event: 1, city: CITIES.length + 1, channel: CITIES.length * 2 + 2,
       user: USERS.length + 1, role: DEFAULT_ROLES.length + 1,
     },
   };
@@ -416,32 +417,32 @@ export function buildDataset() {
     });
   });
 
-  // Заявки из общего Instagram: города ещё нет, их видит владелец и передаёт городу.
+  // Заявки из Instagram городов: свободные, их берут менеджеры города.
   const instagramTag = state.tags.find((tag) => tag.name === 'instagram');
-  const instagramChannel = state.channels.find((channel) => channel.kind === 'instagram');
   INSTAGRAM_LEADS.forEach((lead, index) => {
+    const channel = state.channels.find((item) => item.kind === 'instagram' && item.city_id === lead.cityId);
     const at = stamp(-1, 10 + index);
     const contact = {
       id: state.nextId.contact++, first_name: lead.name, last_name: null, phone: null, email: null, position: null,
-      company_id: null, owner_id: null, city_id: null, notes: null, created_at: at, updated_at: at,
+      company_id: null, owner_id: null, city_id: lead.cityId, notes: null, created_at: at, updated_at: at,
     };
     state.contacts.push(contact);
     const pipeline = state.pipelines[0];
     const deal = {
       id: state.nextId.deal++, title: `Instagram: ${lead.name}`, amount: 0, currency: 'KZT',
       pipeline_id: pipeline.id, stage_id: openStages(pipeline.id)[0].id, lead_type: 'individual',
-      company_id: null, contact_id: contact.id, owner_id: null, city_id: null,
+      company_id: null, contact_id: contact.id, owner_id: null, city_id: lead.cityId,
       expected_close_date: null, closed_at: null, notes: null, created_at: at, updated_at: at,
     };
     state.deals.push(deal);
     state.dealTags.push({ deal_id: deal.id, tag_id: instagramTag.id });
     state.activities.push({
-      id: state.nextId.activity++, type: 'system', body: `Заявка из Instagram (${INSTAGRAM.name})`,
+      id: state.nextId.activity++, type: 'system', body: `Заявка из Instagram (${channel.name})`,
       user_id: null, deal_id: deal.id, company_id: null, contact_id: null, created_at: at,
     });
     const chatId = state.nextId.chat++;
     state.chats.push({
-      id: chatId, channel: 'instagram', channel_id: instagramChannel.id, city_id: null,
+      id: chatId, channel: 'instagram', channel_id: channel.id, city_id: lead.cityId,
       external_id: lead.chatId, title: lead.name, phone: null, contact_id: contact.id, deal_id: deal.id,
       unread: 1, last_message_at: at, created_at: at,
     });
