@@ -29,6 +29,10 @@ export const STAGE_TYPES = ['open', 'won', 'lost'];
 export const LEAD_TYPES = ['individual', 'company'];
 export const CURRENCIES = ['KZT', 'RUB', 'USD', 'EUR'];
 
+// Закрытые сделки копятся годами — на канбане показываем последние,
+// остальные находятся в списке сделок. Счётчик и сумма колонки — по всем.
+export const CLOSED_STAGE_LIMIT = 30;
+
 /** Приводит хэштег к каноническому виду: без «#», в нижнем регистре, без пробелов. */
 export function normalizeTag(value) {
   return String(value ?? '')

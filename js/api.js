@@ -12,7 +12,7 @@ import {
   SECTIONS, normalizeRole,
 } from './permissions.js';
 // Константы берём из того же файла, что и сервер (src/lib/pipelines.js).
-import { CURRENCIES, LEAD_TYPES, STAGE_COLORS, buildStages, normalizeTag } from './stage-constants.js';
+import { CLOSED_STAGE_LIMIT, CURRENCIES, LEAD_TYPES, STAGE_COLORS, buildStages, normalizeTag } from './stage-constants.js';
 
 export class ApiError extends Error {
   constructor(status, message, details) {
@@ -778,7 +778,7 @@ const ROUTES = [
   ['POST', /^\/api\/channels$/, (_m, body) => {
     requireAdmin();
     const channel = {
-      id: db.nextId.channel++, name: required(body, 'name'), phone: body.phone ?? null,
+      id: db.nextId.channel++, name: required(body, 'name'), kind: body.kind ?? 'whatsapp', phone: body.phone ?? null,
       city_id: checkCity(body.city_id), provider: body.provider ?? 'none', phone_id: body.phone_id ?? null,
       api_url: body.api_url ?? null, has_token: Boolean(body.token), active: 1, created_at: now(),
     };
@@ -789,8 +789,8 @@ const ROUTES = [
   ['PATCH', /^\/api\/channels\/(\d+)$/, (match, body) => {
     requireAdmin();
     const channel = byId(db.channels, match[1]);
-    if (!channel) throw new ApiError(404, 'Номер не найден');
-    for (const field of ['name', 'phone', 'provider', 'phone_id', 'api_url']) {
+    if (!channel) throw new ApiError(404, 'Канал не найден');
+    for (const field of ['name', 'kind', 'phone', 'provider', 'phone_id', 'api_url']) {
       if (Object.hasOwn(body, field)) channel[field] = body[field];
     }
     if (body.token) channel.has_token = true;
@@ -805,7 +805,7 @@ const ROUTES = [
 
   ['POST', /^\/api\/channels\/wazzup\/channels$/, () => {
     requireAdmin();
-    throw new ApiError(400, 'В демо Wazzup не подключается — в рабочей CRM здесь появятся номера из вашего аккаунта Wazzup');
+    throw new ApiError(400, 'В демо Wazzup не подключается — в рабочей CRM здесь появятся номера WhatsApp, Instagram и Telegram из вашего аккаунта Wazzup');
   }],
 
   ['POST', /^\/api\/channels\/(\d+)\/wazzup\/webhook$/, () => {
@@ -926,7 +926,7 @@ const ROUTES = [
           id: stage.id, name: stage.name, type: stage.type, color: stage.color,
           count: items.length,
           amount: items.reduce((sum, deal) => sum + deal.amount, 0),
-          items,
+          items: stage.type === 'open' ? items : items.slice(0, CLOSED_STAGE_LIMIT),
         };
       }),
     };
@@ -1016,8 +1016,15 @@ const ROUTES = [
     linkedCity(body);
     const owner = body.owner_id ? assignable('deals', body.owner_id) : null;
     // Город меняет администратор; смена ответственного переносит сделку в его город.
+    const cityBefore = deal.city_id;
     if (canMoveCity('deals') && Object.hasOwn(body, 'city_id')) deal.city_id = checkCity(body.city_id);
     else if (canMoveCity('deals') && owner?.city_id) deal.city_id = owner.city_id;
+    // Заявку из общего Instagram передали городу — переписка и клиент переезжают с ней.
+    if (deal.city_id !== cityBefore) {
+      for (const chat of db.chats.filter((item) => item.deal_id === deal.id)) chat.city_id = deal.city_id;
+      const contact = byId(db.contacts, deal.contact_id);
+      if (contact && contact.city_id == null) contact.city_id = deal.city_id;
+    }
 
     if (Object.hasOwn(body, 'title')) {
       const title = required(body, 'title');
@@ -1555,8 +1562,9 @@ const ROUTES = [
 
   ['POST', /^\/api\/chats$/, (_m, body) => {
     assertAccess('chats', 'create');
-    // Писать можно только с номеров своего города (администратор — с любого).
-    const available = db.channels.filter(channelsIn());
+    // Писать можно только с номеров WhatsApp своего города (администратор — с любого).
+    // В Instagram и Telegram первым пишет клиент.
+    const available = db.channels.filter(channelsIn()).filter((item) => (item.kind ?? 'whatsapp') === 'whatsapp');
     const channel = body.channel_id ? available.find((item) => item.id === Number(body.channel_id)) : available[0];
     if (body.channel_id && !channel) throw new ApiError(400, 'Ошибка валидации', { channel_id: 'Номер не найден' });
     const chat = {

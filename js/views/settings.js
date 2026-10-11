@@ -2,7 +2,7 @@ import { api } from '../api.js';
 import { store } from '../store.js';
 import { confirmDialog, el, formatDateTime, openForm, toast } from '../ui.js';
 
-/** Настройки (только администратор): города, сотрудники, номера WhatsApp, почта, AI. */
+/** Настройки (только администратор): города, сотрудники, каналы (WhatsApp, Instagram, Telegram), почта, AI. */
 export async function renderSettings(root) {
   const content = el('div', { class: 'content stack' });
 
@@ -126,7 +126,7 @@ export async function renderSettings(root) {
       el('div', { class: 'card-body', style: 'display:grid;gap:12px' }, [
         el('div', { class: 'muted', text: 'Город сотрудника определяет «свои города» в его роли. Администратор видит все города.' }),
         el('div', { class: 'table-wrap' }, el('table', {}, [
-          el('thead', {}, [el('tr', {}, ['Город', 'Сотрудников', 'Сделок', 'Номеров WhatsApp', '']
+          el('thead', {}, [el('tr', {}, ['Город', 'Сотрудников', 'Сделок', 'Каналов', '']
             .map((title, index) => el('th', { class: index && index < 4 ? 'num' : '', text: title })))]),
           el('tbody', {}, cities.length ? cities.map((city) => {
             const input = el('input', { value: city.name, style: 'max-width:220px' });
@@ -436,8 +436,20 @@ export async function renderSettings(root) {
     ])),
   ]);
 
-  /** Номера WhatsApp: у каждого города свой номер и свой шлюз. */
-  /** Поиск номеров в аккаунте Wazzup: выбор номера заполняет ID канала. */
+  /** Каналы: номера WhatsApp, Instagram и Telegram. У каждого города может быть свой. */
+  const KINDS = [
+    { value: 'whatsapp', label: 'WhatsApp' },
+    { value: 'instagram', label: 'Instagram' },
+    { value: 'telegram', label: 'Telegram' },
+  ];
+  const KIND_ICONS = { whatsapp: '🟢', instagram: '📸', telegram: '✈️' };
+  const accountOf = (item) => {
+    if (!item.phone) return item.channelId;
+    if (item.kind === 'whatsapp') return `+${item.phone}`;
+    return item.kind === 'instagram' ? `@${item.phone}` : item.phone;
+  };
+
+  /** Поиск каналов в аккаунте Wazzup: выбор канала заполняет его ID и мессенджер. */
   const wazzupPicker = (channel) => {
     const list = el('div', { style: 'display:flex;gap:6px;flex-wrap:wrap' });
     const find = async (event) => {
@@ -450,12 +462,13 @@ export async function renderSettings(root) {
           type: 'button', class: 'btn chip',
           onclick: (choice) => {
             form.querySelector('input[name=phone_id]').value = item.channelId;
+            form.querySelector('select[name=kind]').value = item.kind ?? 'whatsapp';
             const phone = form.querySelector('input[name=phone]');
-            if (!phone.value && item.phone) phone.value = `+${item.phone}`;
+            if (!phone.value && item.phone) phone.value = accountOf(item);
             for (const chip of list.children) chip.classList.toggle('on', chip === choice.currentTarget);
           },
-        }, `${item.phone ? `+${item.phone}` : item.channelId}${item.state && item.state !== 'active' ? ` (${item.state})` : ''}`))
-          : [el('span', { class: 'muted', text: 'В аккаунте Wazzup нет номеров WhatsApp' })]));
+        }, `${KIND_ICONS[item.kind] ?? ''} ${accountOf(item)}${item.state && item.state !== 'active' ? ` (${item.state})` : ''}`))
+          : [el('span', { class: 'muted', text: 'В аккаунте Wazzup нет каналов WhatsApp, Instagram или Telegram' })]));
       } catch (error) {
         const message = error.details ? Object.values(error.details).join('. ') : error.message;
         list.replaceChildren(el('span', { style: 'color:var(--red)', text: message }));
@@ -465,7 +478,7 @@ export async function renderSettings(root) {
     };
     return {
       node: el('div', { style: 'display:grid;gap:6px' }, [
-        el('div', {}, el('button', { type: 'button', class: 'btn secondary', onclick: find }, 'Найти номера в аккаунте Wazzup')),
+        el('div', {}, el('button', { type: 'button', class: 'btn secondary', onclick: find }, 'Найти каналы в аккаунте Wazzup')),
         list,
       ]),
       read: () => undefined,
@@ -475,28 +488,29 @@ export async function renderSettings(root) {
   const channelForm = (channel, cities) => {
     const picker = wazzupPicker(channel);
     return openForm({
-    title: channel ? `Номер — ${channel.name}` : 'Новый номер WhatsApp',
+    title: channel ? `Канал — ${channel.name}` : 'Новый канал',
     fields: [
-      { name: 'name', label: 'Название', required: true, value: channel?.name ?? '', width: 'full' },
-      { name: 'phone', label: 'Номер телефона', value: channel?.phone },
+      { name: 'name', label: 'Название', required: true, value: channel?.name ?? '' },
+      { name: 'kind', label: 'Мессенджер', type: 'select', value: channel?.kind ?? 'whatsapp', options: KINDS },
+      { name: 'phone', label: 'Номер телефона или @аккаунт', value: channel?.phone },
       { name: 'city_id', label: 'Город', type: 'select', value: channel?.city_id ?? '',
-        options: cityOptions(cities, '— общий, только администратору —') },
+        options: cityOptions(cities, '— общий, заявки у владельца —') },
       { name: 'provider', label: 'Шлюз', type: 'select', value: channel?.provider ?? 'none', options: PROVIDERS },
       { name: 'token', label: channel?.has_token
         ? 'Ключ API Wazzup или токен Meta (сохранён — введите новый, чтобы заменить)'
         : 'Ключ API Wazzup или токен Meta', type: 'password' },
       { name: 'phone_id', label: 'ID канала Wazzup или phone_number_id Meta', value: channel?.phone_id },
-      { name: 'wazzup', label: 'Для Wazzup: введите ключ и выберите номер', type: 'custom', width: 'full',
+      { name: 'wazzup', label: 'Для Wazzup: введите ключ и выберите канал', type: 'custom', width: 'full',
         node: picker.node, read: picker.read },
       { name: 'api_url', label: 'Адрес API (только для своего шлюза)', value: channel?.api_url, width: 'full' },
-      channel ? { name: 'active', label: 'Номер включён', type: 'checkbox', value: Boolean(channel.active) } : null,
+      channel ? { name: 'active', label: 'Канал включён', type: 'checkbox', value: Boolean(channel.active) } : null,
     ].filter(Boolean),
     onSubmit: async (values) => {
       const { wazzup, ...payload } = values;
       if (!payload.token) delete payload.token;
       if (channel) await api.patch(`/api/channels/${channel.id}`, payload);
       else await api.post('/api/channels', payload);
-      toast(channel ? 'Номер сохранён' : 'Номер добавлен');
+      toast(channel ? 'Канал сохранён' : 'Канал добавлен');
       store.invalidate('cities');
       await reload();
     },
@@ -518,16 +532,16 @@ export async function renderSettings(root) {
 
   const channelsCard = (channels, cities) => el('div', { class: 'card' }, [
     el('div', { class: 'card-head' }, [
-      'Номера WhatsApp',
-      el('button', { class: 'btn', onclick: () => channelForm(null, cities) }, '+ Номер'),
+      'Каналы: WhatsApp, Instagram, Telegram',
+      el('button', { class: 'btn', onclick: () => channelForm(null, cities) }, '+ Канал'),
     ]),
     el('div', { class: 'card-body', style: 'display:grid;gap:14px' }, [
-      el('div', { class: 'muted', text: 'Сообщения, пришедшие на номер, попадают в imBox его города, ответ клиенту уходит с того же номера. Wazzup: в карточке номера (✎) выберите шлюз Wazzup, введите ключ API, найдите и выберите номер, сохраните и нажмите «Подключить приём сообщений». Meta или свой шлюз: укажите у провайдера адрес вебхука номера.' }),
+      el('div', { class: 'muted', text: 'Сообщения, пришедшие в канал, попадают в imBox его города, ответ клиенту уходит из того же канала. Канал без города (например, один Instagram на все города) — заявки видит владелец и передаёт городу, указав город в сделке. Wazzup: в карточке канала (✎) выберите шлюз Wazzup, введите ключ API, найдите и выберите канал, сохраните и нажмите «Подключить приём сообщений». Instagram и Telegram подключаются только через Wazzup.' }),
       ...(channels.length ? channels.map((channel) => el('div', { class: 'channel-row' }, [
         el('div', { style: 'display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center' }, [
           el('div', {}, [
-            el('strong', { text: channel.name }),
-            el('span', { class: 'muted', text: ` · ${channel.phone ?? 'номер не указан'} · ${channel.city_name ?? 'общий номер'}` }),
+            el('strong', { text: `${KIND_ICONS[channel.kind] ?? ''} ${channel.name}` }),
+            el('span', { class: 'muted', text: ` · ${channel.phone ?? 'не указан'} · ${channel.city_name ?? 'общий, у владельца'}` }),
           ]),
           el('div', { style: 'display:flex;gap:6px;align-items:center;flex-wrap:wrap' }, [
             statusBadge(channel.status),
@@ -536,14 +550,14 @@ export async function renderSettings(root) {
                   onclick: (event) => connectWazzup(channel, event.currentTarget) }, 'Подключить приём сообщений')
               : null,
             el('button', { class: 'btn ghost', title: 'Изменить', onclick: () => channelForm(channel, cities) }, '✎'),
-            el('button', { class: 'btn ghost', title: 'Удалить номер', onclick: async () => {
-              if (!await confirmDialog(`Удалить номер «${channel.name}»? Переписки останутся.`)) return;
-              run(() => api.delete(`/api/channels/${channel.id}`), 'Номер удалён');
+            el('button', { class: 'btn ghost', title: 'Удалить канал', onclick: async () => {
+              if (!await confirmDialog(`Удалить канал «${channel.name}»? Переписки останутся.`)) return;
+              run(() => api.delete(`/api/channels/${channel.id}`), 'Канал удалён');
             } }, '🗑'),
           ]),
         ]),
-        copyRow('Вебхук этого номера', channel.webhook_url),
-      ])) : [el('div', { class: 'empty', text: 'Номера не добавлены' })]),
+        copyRow('Вебхук этого канала', channel.webhook_url),
+      ])) : [el('div', { class: 'empty', text: 'Каналы не добавлены' })]),
     ]),
   ]);
 
@@ -583,7 +597,7 @@ export async function renderSettings(root) {
         el('div', { class: 'card-head', text: 'Адреса для интеграций' }),
         el('div', { class: 'card-body', style: 'display:grid;gap:12px' }, [
           el('div', { class: 'muted' },
-            'Адрес вебхука почты укажите в почтовом сервисе. Адреса WhatsApp — у каждого номера в разделе «Номера WhatsApp».'),
+            'Адрес вебхука почты укажите в почтовом сервисе. Адреса WhatsApp, Instagram и Telegram — у каждого канала в разделе «Каналы».'),
           copyRow('Вебхук почты', webhooks.email),
           el('div', { class: 'fields-row' }, [
             field('webhook_secret', 'Секрет вебхука', settings.webhook_secret, {

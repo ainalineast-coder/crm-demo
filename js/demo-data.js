@@ -24,32 +24,41 @@ function random(seed) {
 }
 
 // Города (филиалы): у каждого свои менеджеры, свой номер WhatsApp и свои заявки.
+// Минск — возможно, позже: город добавляется в «Настройках».
 const CITIES = [
-  { id: 1, name: 'Минск', phoneCode: '+375 29 ', whatsapp: '+375 29 100-20-30' },
-  { id: 2, name: 'Караганда', phoneCode: '+7 7', whatsapp: '+7 721 250-30-40' },
-  { id: 3, name: 'Алматы', phoneCode: '+7 7', whatsapp: '+7 701 191 6495' },
+  { id: 1, name: 'Караганда', whatsapp: '+7 721 250-30-40' },
+  { id: 2, name: 'Алматы', whatsapp: '+7 701 191 6495' },
 ];
 
 // Номер владельца: без города, переписку на нём видит только администратор.
 const OWNER_WHATSAPP = { name: 'WhatsApp владельца', phone: '+7 708 641 9548' };
 
+// Общий Instagram без города: заявки из него видит владелец и передаёт нужному городу.
+const INSTAGRAM = { name: 'Instagram Beyosa', kind: 'instagram', phone: null };
+const INSTAGRAM_LEADS = [
+  { name: 'Мадина', chatId: 'madina.home', text: 'Здравствуйте! Есть доставка в Караганду? Интересует матрас 160×200' },
+  { name: 'Арман', chatId: 'arman_k', text: 'Сколько стоит кровать с подъёмным механизмом?' },
+];
+
+// Как в Beyosa: 4 менеджера в Алматы, 2 в Караганде, общий доступ — у одного человека.
 // Администратор видит всё; остальным права даёт роль (порядок как в DEFAULT_ROLES:
-// 1 — менеджер «свои и свободные заявки», 4 — стажёр, 5 — руководитель всех городов
-// с правом только на просмотр). leads — ведёт демо-заявки.
+// 1 — менеджер «свои и свободные заявки», 4 — стажёр). leads — ведёт демо-заявки.
 // demoLabel — подпись в переключателе «Смотреть как».
 export const USERS = [
   { id: 1, name: 'Жанна', email: 'admin@crm.local', role: 'admin', city_id: null, role_id: null, active: 1,
-    demoLabel: 'владелец, всё во всех городах' },
-  { id: 2, name: 'Андрей Лукашевич', email: 'andrey@crm.local', role: 'manager', city_id: 1, role_id: 1, active: 1,
-    leads: true, demoLabel: 'менеджер Минска: свои и свободные' },
-  { id: 3, name: 'Ольга Тихонова', email: 'olga@crm.local', role: 'manager', city_id: 2, role_id: 1, active: 1,
-    leads: true, demoLabel: 'менеджер Караганды: свои и свободные' },
-  { id: 4, name: 'Пётр Ковалёв', email: 'petr@crm.local', role: 'manager', city_id: 3, role_id: 1, active: 1,
-    leads: true, demoLabel: 'менеджер Алматы: свои и свободные' },
-  { id: 5, name: 'Айгерим Нурланова', email: 'aigerim@crm.local', role: 'manager', city_id: 3, role_id: 4, active: 1,
-    leads: true, demoLabel: 'стажёр: только свои, суммы видит без правки' },
-  { id: 6, name: 'Марат Сейткали', email: 'marat@crm.local', role: 'manager', city_id: 3, role_id: 5, active: 1,
-    demoLabel: 'руководитель: все города, только просмотр' },
+    demoLabel: 'общий доступ: все города, Instagram, настройки' },
+  { id: 2, name: 'Ольга Тихонова', email: 'olga@crm.local', role: 'manager', city_id: 1, role_id: 1, active: 1,
+    leads: true, demoLabel: 'менеджер Караганды' },
+  { id: 3, name: 'Тимур Нурпеисов', email: 'timur@crm.local', role: 'manager', city_id: 1, role_id: 1, active: 1,
+    leads: true, demoLabel: 'менеджер Караганды' },
+  { id: 4, name: 'Пётр Ковалёв', email: 'petr@crm.local', role: 'manager', city_id: 2, role_id: 1, active: 1,
+    leads: true, demoLabel: 'менеджер Алматы' },
+  { id: 5, name: 'Алия Сейткали', email: 'aliya@crm.local', role: 'manager', city_id: 2, role_id: 1, active: 1,
+    leads: true, demoLabel: 'менеджер Алматы' },
+  { id: 6, name: 'Дана Жумабаева', email: 'dana@crm.local', role: 'manager', city_id: 2, role_id: 1, active: 1,
+    leads: true, demoLabel: 'менеджер Алматы' },
+  { id: 7, name: 'Айгерим Нурланова', email: 'aigerim@crm.local', role: 'manager', city_id: 2, role_id: 4, active: 1,
+    leads: true, demoLabel: 'стажёр Алматы: только свои' },
 ];
 
 const TAGS = [
@@ -62,69 +71,73 @@ const TAGS = [
 
 // По компании на город — в том же порядке, что и менеджеры.
 const COMPANIES = [
-  { name: 'ООО «Северный Ветер»', industry: 'Логистика', website: 'sever-veter.by', phone: '+375 17 400-10-11', address: 'Минск, пр. Независимости 12' },
-  { name: 'ТОО «ТехноПром»', industry: 'Производство', website: 'technoprom.kz', phone: '+7 7212 22-33-44', address: 'Караганда, пр. Бухар-Жырау 7' },
-  { name: 'ТОО «МедТех Сервис»', industry: 'Медицина', website: 'medteh.kz', phone: '+7 727 355-66-77', address: 'Алматы, пр. Абая 5' },
+  { name: 'ТОО «Гостиница Сарыарка»', industry: 'Гостиницы', website: 'saryarka-hotel.kz', phone: '+7 7212 40-10-11', address: 'Караганда, пр. Бухар-Жырау 52' },
+  { name: 'ТОО «Детский сад Балапан»', industry: 'Образование', website: 'balapan-kids.kz', phone: '+7 7212 22-33-44', address: 'Караганда, ул. Ерубаева 7' },
+  { name: 'ТОО «Хостел Алатау»', industry: 'Гостиницы', website: 'alatau-hostel.kz', phone: '+7 727 355-66-77', address: 'Алматы, пр. Абая 5' },
 ];
 
-const MALE_NAMES = ['Иван', 'Сергей', 'Дмитрий', 'Артём', 'Алексей', 'Павел', 'Михаил', 'Роман'];
-const FEMALE_NAMES = ['Мария', 'Ольга', 'Елена', 'Наталья', 'Ирина', 'Юлия', 'Анастасия', 'Татьяна'];
+const MALE_NAMES = ['Ерлан', 'Сергей', 'Даурен', 'Алексей', 'Асхат', 'Дмитрий', 'Нурлан', 'Арман'];
+const FEMALE_NAMES = ['Айгуль', 'Мадина', 'Елена', 'Динара', 'Ольга', 'Асель', 'Наталья', 'Жанар'];
 const LAST_NAMES = [
-  ['Волков', 'Волкова'], ['Зайцев', 'Зайцева'], ['Ким', 'Ким'], ['Лебедев', 'Лебедева'],
-  ['Новиков', 'Новикова'], ['Соколов', 'Соколова'], ['Морозов', 'Морозова'], ['Фомин', 'Фомина'],
-  ['Гусев', 'Гусева'], ['Орлов', 'Орлова'], ['Белов', 'Белова'], ['Крылов', 'Крылова'],
-  ['Сафин', 'Сафина'], ['Данилов', 'Данилова'], ['Егоров', 'Егорова'], ['Титов', 'Титова'],
+  ['Ахметов', 'Ахметова'], ['Ким', 'Ким'], ['Волков', 'Волкова'], ['Сарсенбаев', 'Сарсенбаева'],
+  ['Жуматов', 'Жуматова'], ['Лебедев', 'Лебедева'], ['Искаков', 'Искакова'], ['Морозов', 'Морозова'],
+  ['Абдрахманов', 'Абдрахманова'], ['Орлов', 'Орлова'], ['Касымов', 'Касымова'], ['Белов', 'Белова'],
+  ['Нургалиев', 'Нургалиева'], ['Данилов', 'Данилова'], ['Есенов', 'Есенова'], ['Титов', 'Титова'],
 ];
 
-const LEAD_TITLES = ['Заявка с сайта с оптовой формы', 'Заявка из директа', 'Звонок по рекламе',
-  'Запрос расчёта', 'Консультация по услуге', 'Заявка на прайс', 'Вопрос по цене', 'Повторное обращение'];
+const LEAD_TITLES = [
+  'Заявка с сайта', 'Заявка из Instagram', 'Звонок по рекламе', 'Запрос цены',
+  'Консультация по размеру', 'Заявка на доставку', 'Вопрос по рассрочке', 'Повторное обращение',
+];
 
-const PRODUCTS = ['Переплетный картон', 'Коробки малого размера', 'Гофрокартон',
-  'Стрейч-плёнка', 'Скотч упаковочный', 'Бумага офсетная'];
+const PRODUCTS = [
+  'Матрас 160×200', 'Матрас 90×200', 'Кровать с подъёмным механизмом',
+  'Подушка ортопедическая', 'Топпер 160×200', 'Детский матрас 70×140',
+];
 
 // Насколько далеко заявка ушла по воронке: индекс рабочего этапа или закрытие.
 const PROGRESS_POOL = [0, 0, 0, 1, 1, 1, 2, 2, 3, 'won', 'won', 'won', 'lost', 'lost'];
 
 const TASKS = [
   { title: 'Связаться: принять заявку в работу', due: -1, priority: 'high' },
-  { title: 'Отправить прайс', due: 0, priority: 'high' },
-  { title: 'Перезвонить по остатку на складе', due: 0, priority: 'normal' },
+  { title: 'Отправить фото и цены', due: 0, priority: 'high' },
+  { title: 'Уточнить размер кровати', due: 0, priority: 'normal' },
   { title: 'Выставить счёт', due: 1, priority: 'normal' },
-  { title: 'Согласовать дату отгрузки', due: 1, priority: 'normal' },
-  { title: 'Уточнить реквизиты', due: 3, priority: 'low' },
-  { title: 'Собрать обратную связь по заказу', due: 5, priority: 'low', done: 1 },
+  { title: 'Согласовать дату доставки', due: 1, priority: 'normal' },
+  { title: 'Уточнить адрес доставки', due: 3, priority: 'low' },
+  { title: 'Собрать отзыв после доставки', due: 5, priority: 'low', done: 1 },
 ];
 
 const PRODUCTS_CATALOG = [
-  { sku: 'PK-001', name: 'Переплетный картон 2.0 мм', price: 1_200, unit: 'лист', stock: 420, group: 'Картон' },
-  { sku: 'PK-002', name: 'Гофрокартон Т-23', price: 850, unit: 'м²', stock: 1_150, group: 'Картон' },
-  { sku: 'KR-010', name: 'Коробка малого размера', price: 320, unit: 'шт', stock: 2_400, group: 'Упаковка' },
-  { sku: 'KR-020', name: 'Коробка большого размера', price: 540, unit: 'шт', stock: 860, group: 'Упаковка' },
-  { sku: 'SP-100', name: 'Стрейч-плёнка 17 мкм', price: 2_800, unit: 'рулон', stock: 130, group: 'Плёнка' },
-  { sku: 'SK-050', name: 'Скотч упаковочный 48 мм', price: 450, unit: 'шт', stock: 980, group: 'Расходники' },
+  { sku: 'MT-160', name: 'Матрас ортопедический 160×200', price: 189_000, unit: 'шт', stock: 24, group: 'Матрасы' },
+  { sku: 'MT-090', name: 'Матрас ортопедический 90×200', price: 109_000, unit: 'шт', stock: 30, group: 'Матрасы' },
+  { sku: 'MT-K70', name: 'Детский матрас 70×140', price: 49_000, unit: 'шт', stock: 18, group: 'Матрасы' },
+  { sku: 'TP-160', name: 'Топпер 160×200', price: 45_000, unit: 'шт', stock: 40, group: 'Топперы' },
+  { sku: 'PL-001', name: 'Подушка ортопедическая', price: 18_000, unit: 'шт', stock: 120, group: 'Подушки' },
+  { sku: 'KR-160', name: 'Кровать с подъёмным механизмом 160×200', price: 245_000, unit: 'шт', stock: 8, group: 'Кровати' },
 ];
 
 const CHATS = [
   {
-    title: 'Алексей',
+    title: 'Динара',
     messages: [
-      { in: true, text: 'Здравствуйте! Интересует переплетный картон, есть в наличии?' },
-      { in: false, text: 'Добрый день! Да, 2 мм есть на складе. Какой объём нужен?' },
-      { in: true, text: 'Примерно 500 листов. Пришлите прайс, пожалуйста.' },
+      { in: true, text: 'Здравствуйте! Сколько стоит ортопедический матрас 160×200?' },
+      { in: false, text: 'Добрый день! 189 000 ₸, есть в наличии. Доставка по городу бесплатно.' },
+      { in: true, text: 'А рассрочка есть?' },
     ],
   },
   {
-    title: 'Евгений',
+    title: 'Ерлан',
     messages: [
-      { in: true, text: 'Добрый день, когда будет отгрузка по прошлому заказу?' },
-      { in: false, text: 'Здравствуйте! Отгрузим завтра до обеда, водитель позвонит.' },
+      { in: true, text: 'Добрый день, когда привезут кровать?' },
+      { in: false, text: 'Здравствуйте! Доставка завтра с 10 до 14, водитель позвонит заранее.' },
     ],
   },
   {
-    title: 'Дмитрий',
+    title: 'Асель',
     messages: [
-      { in: true, text: 'Пришла партия с браком, 3 коробки мятые.' },
-      { in: false, text: 'Извините за ситуацию. Оформляем рекламацию, заменим в ближайшей поставке.' },
+      { in: true, text: 'Матрас привезли с порванной упаковкой, на углу пятно.' },
+      { in: false, text: 'Извините! Оформляем рекламацию и заменим матрас в течение трёх дней.' },
       { in: true, text: 'Хорошо, жду.' },
     ],
   },
@@ -132,28 +145,28 @@ const CHATS = [
 
 const EMAILS = [
   {
-    direction: 'out', subject: 'Коммерческое предложение — упаковка',
-    body: 'Добрый день! Направляем прайс на картон и упаковку. Готовы обсудить объёмы.',
+    direction: 'out', subject: 'Коммерческое предложение — матрасы для гостиницы',
+    body: 'Добрый день! Направляем цены на матрасы и топперы для номеров. Готовы обсудить объём и сроки.',
     from: 'sales@company.kz', to: 'client1@mail.local',
   },
   {
-    direction: 'in', subject: 'Re: Коммерческое предложение — упаковка',
+    direction: 'in', subject: 'Re: Коммерческое предложение — матрасы для гостиницы',
     body: 'Спасибо, изучим и вернёмся с ответом на неделе.',
     from: 'client1@mail.local', to: 'sales@company.kz',
   },
   {
     direction: 'out', subject: 'Счёт на оплату №1042',
-    body: 'Во вложении счёт на оплату. Отгрузка после поступления средств.',
+    body: 'Во вложении счёт на оплату. Доставка после поступления средств.',
     from: 'sales@company.kz', to: 'client2@mail.local',
   },
 ];
 
 const NOTES = [
-  { type: 'call', body: 'Клиент позвонил по рекламе, интересует стоимость и сроки.' },
+  { type: 'call', body: 'Клиент позвонил по рекламе, интересует цена и сроки доставки.' },
   { type: 'note', body: 'Просит перезвонить после 18:00.' },
-  { type: 'meeting', body: 'Договорились о встрече в офисе.' },
-  { type: 'email', body: 'Отправили расчёт и реквизиты.' },
-  { type: 'note', body: 'Сравнивает с конкурентом, решение на следующей неделе.' },
+  { type: 'meeting', body: 'Договорились, что клиент приедет в шоурум полежать на матрасах.' },
+  { type: 'email', body: 'Отправили фото, цены и реквизиты.' },
+  { type: 'note', body: 'Сравнивает с другим магазином, решение на следующей неделе.' },
 ];
 
 export function buildDataset() {
@@ -165,8 +178,9 @@ export function buildDataset() {
     channels: [
       ...CITIES.map((city) => ({ id: city.id, name: `WhatsApp ${city.name}`, phone: city.whatsapp, city_id: city.id })),
       { id: CITIES.length + 1, ...OWNER_WHATSAPP, city_id: null },
+      { id: CITIES.length + 2, ...INSTAGRAM, city_id: null },
     ].map((channel) => ({
-      ...channel, provider: 'none', phone_id: null, api_url: null, has_token: false, active: 1, created_at: stamp(-90, 10),
+      kind: 'whatsapp', ...channel, provider: 'none', phone_id: null, api_url: null, has_token: false, active: 1, created_at: stamp(-90, 10),
     })),
     roles: DEFAULT_ROLES.map((role, index) => ({
       id: index + 1, name: role.name, ...normalizeRole(role.permissions), created_at: stamp(-90, 10),
@@ -194,14 +208,14 @@ export function buildDataset() {
     authLog: [
       { id: 1, user_id: 1, email: 'admin@crm.local', ip: '95.56.10.4', success: 1, reason: null, created_at: stamp(-1, 9) },
       { id: 2, user_id: 4, email: 'petr@crm.local', ip: '95.56.12.7', success: 1, reason: null, created_at: stamp(-1, 10) },
-      { id: 3, user_id: 3, email: 'olga@crm.local', ip: '2.134.5.18', success: 0, reason: 'неверный пароль', created_at: stamp(0, 9) },
-      { id: 4, user_id: 3, email: 'olga@crm.local', ip: '2.134.5.18', success: 1, reason: null, created_at: stamp(0, 9) },
+      { id: 3, user_id: 2, email: 'olga@crm.local', ip: '2.134.5.18', success: 0, reason: 'неверный пароль', created_at: stamp(0, 9) },
+      { id: 4, user_id: 2, email: 'olga@crm.local', ip: '2.134.5.18', success: 1, reason: null, created_at: stamp(0, 9) },
     ],
     settings: {},
     nextId: {
       company: 1, contact: 1, deal: 1, tag: TAGS.length + 1, task: 1, activity: 1,
       pipeline: 1, stage: 1, product: 1, item: 1, file: 1, call: 1, goal: 1,
-      chat: 1, message: 1, email: 1, event: 1, city: CITIES.length + 1, channel: CITIES.length + 2,
+      chat: 1, message: 1, email: 1, event: 1, city: CITIES.length + 1, channel: CITIES.length + 3,
       user: USERS.length + 1, role: DEFAULT_ROLES.length + 1,
     },
   };
@@ -229,12 +243,8 @@ export function buildDataset() {
   const ownerFor = (index) => managerFor(index).id;
   const cityFor = (index) => managerFor(index).city_id;
   const digits = (count) => String(Math.floor(10 ** (count - 1) + rnd() * 9 * 10 ** (count - 1)));
-  const phoneIn = (cityId) => {
-    const city = CITIES.find((item) => item.id === cityId);
-    return city.phoneCode === '+7 7'
-      ? `+7 7${digits(2)} ${digits(3)}-${digits(2)}-${digits(2)}`
-      : `${city.phoneCode}${digits(3)}-${digits(2)}-${digits(2)}`;
-  };
+  // Казахстанский мобильный: +7 701 123-45-67.
+  const phoneIn = () => `+7 7${digits(2)} ${digits(3)}-${digits(2)}-${digits(2)}`;
   const dealCity = (dealId) => state.deals.find((deal) => deal.id === dealId)?.city_id ?? null;
 
   COMPANIES.forEach((company, index) => {
@@ -253,7 +263,7 @@ export function buildDataset() {
     const names = female ? FEMALE_NAMES : MALE_NAMES;
     const firstName = names[Math.floor(rnd() * names.length)];
     const lastName = LAST_NAMES[Math.floor(rnd() * LAST_NAMES.length)][female ? 1 : 0];
-    const phone = phoneIn(cityFor(index));
+    const phone = phoneIn();
 
     const contact = {
       id: state.nextId.contact++, first_name: firstName, last_name: lastName, phone,
@@ -323,8 +333,8 @@ export function buildDataset() {
     const stage = open[(index + 1) % open.length];
     const deal = {
       id: state.nextId.deal++,
-      title: `Заказ ${company.name} — ${(index + 2) * 20} коробок`,
-      amount: (index + 3) * 120_000,
+      title: `Заказ ${company.name} — ${(index + 2) * 10} матрасов`,
+      amount: (index + 2) * 10 * 95_000,
       currency: 'KZT',
       pipeline_id: pipeline.id,
       stage_id: stage.id,
@@ -353,7 +363,7 @@ export function buildDataset() {
 
   state.deals.slice(0, 12).forEach((deal, index) => {
     const product = state.products[index % state.products.length];
-    const quantity = 5 + Math.floor(rnd() * 40);
+    const quantity = 1 + Math.floor(rnd() * 3);
     state.dealItems.push({
       id: state.nextId.item++, deal_id: deal.id, product_id: product.id,
       name: product.name, price: product.price, quantity, created_at: deal.created_at,
@@ -403,6 +413,41 @@ export function buildDataset() {
         external_id: null, status: message.in ? 'received' : 'sent',
         created_at: stamp(-Math.floor(rnd() * 3), 12 + index, position),
       });
+    });
+  });
+
+  // Заявки из общего Instagram: города ещё нет, их видит владелец и передаёт городу.
+  const instagramTag = state.tags.find((tag) => tag.name === 'instagram');
+  const instagramChannel = state.channels.find((channel) => channel.kind === 'instagram');
+  INSTAGRAM_LEADS.forEach((lead, index) => {
+    const at = stamp(-1, 10 + index);
+    const contact = {
+      id: state.nextId.contact++, first_name: lead.name, last_name: null, phone: null, email: null, position: null,
+      company_id: null, owner_id: null, city_id: null, notes: null, created_at: at, updated_at: at,
+    };
+    state.contacts.push(contact);
+    const pipeline = state.pipelines[0];
+    const deal = {
+      id: state.nextId.deal++, title: `Instagram: ${lead.name}`, amount: 0, currency: 'KZT',
+      pipeline_id: pipeline.id, stage_id: openStages(pipeline.id)[0].id, lead_type: 'individual',
+      company_id: null, contact_id: contact.id, owner_id: null, city_id: null,
+      expected_close_date: null, closed_at: null, notes: null, created_at: at, updated_at: at,
+    };
+    state.deals.push(deal);
+    state.dealTags.push({ deal_id: deal.id, tag_id: instagramTag.id });
+    state.activities.push({
+      id: state.nextId.activity++, type: 'system', body: `Заявка из Instagram (${INSTAGRAM.name})`,
+      user_id: null, deal_id: deal.id, company_id: null, contact_id: null, created_at: at,
+    });
+    const chatId = state.nextId.chat++;
+    state.chats.push({
+      id: chatId, channel: 'instagram', channel_id: instagramChannel.id, city_id: null,
+      external_id: lead.chatId, title: lead.name, phone: null, contact_id: contact.id, deal_id: deal.id,
+      unread: 1, last_message_at: at, created_at: at,
+    });
+    state.chatMessages.push({
+      id: state.nextId.message++, chat_id: chatId, direction: 'in', body: lead.text, author_name: lead.name,
+      user_id: null, external_id: null, status: 'received', created_at: at,
     });
   });
 

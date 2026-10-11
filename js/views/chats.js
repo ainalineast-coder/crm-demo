@@ -3,8 +3,9 @@ import { allow, cityParam, cityTag, store } from '../store.js';
 import { el, formatDateTime, initials, openForm, toast } from '../ui.js';
 
 const channelLabel = (channel) => [channel.name, channel.phone].filter(Boolean).join(' · ');
+const SOURCES = { whatsapp: '🟢 WhatsApp', instagram: '📸 Instagram', telegram: '✈️ Telegram' };
 
-/** imBox: переписки с клиентами в WhatsApp — на номерах своего города. */
+/** imBox: переписки с клиентами в WhatsApp, Instagram и Telegram — в каналах своего города. */
 export async function renderChats(root, params = {}) {
   const state = { chatId: params.id ? Number(params.id) : null, channels: [] };
 
@@ -23,6 +24,7 @@ export async function renderChats(root, params = {}) {
           el('div', { style: 'flex:1;min-width:0' }, [
             el('div', { class: 'row' }, [
               el('strong', { text: chat.title ?? chat.phone ?? 'Без имени' }),
+              el('span', { class: 'muted source', text: SOURCES[chat.channel] ?? '' }),
               chat.unread ? el('span', { class: 'badge unread', text: String(chat.unread) }) : null,
             ]),
             el('div', { class: 'muted preview', text: chat.last_message ?? 'Нет сообщений' }),
@@ -71,8 +73,8 @@ export async function renderChats(root, params = {}) {
           el('strong', { text: chat.title ?? chat.phone }),
           el('div', { class: 'muted', text: [chat.phone, chat.deal_title].filter(Boolean).join(' · ') }),
           el('div', { class: 'muted', style: 'font-size:11px', text: chat.channel_name
-            ? `Номер: ${[chat.channel_name, chat.channel_phone].filter(Boolean).join(' · ')}`
-            : 'Номер не определён — ответ уйдёт с номера города' }),
+            ? `${SOURCES[chat.channel] ?? 'Канал'}: ${[chat.channel_name, chat.channel_phone].filter(Boolean).join(' · ')}`
+            : 'Канал не определён — ответ уйдёт с номера города' }),
         ]),
         chat.deal_id ? el('a', { href: `#/deals/${chat.deal_id}`, text: 'Открыть сделку' }) : null,
       ]),
@@ -105,7 +107,7 @@ export async function renderChats(root, params = {}) {
     state.channels = data.channels.filter((channel) => !cityParam() || String(channel.city_id) === cityParam());
     channelBadge.textContent = state.channels.length
       ? state.channels.map((channel) => `${channelLabel(channel)}: ${channel.status.ready ? 'подключён' : 'не подключён'}`).join(' | ')
-      : 'Номер WhatsApp для вашего города не добавлен';
+      : 'Каналы для вашего города не добавлены';
     renderList(data.items);
     if (!state.chatId && data.items.length) await openChat(data.items[0].id);
     else if (state.chatId) renderList(data.items);
@@ -114,16 +116,19 @@ export async function renderChats(root, params = {}) {
   let timer;
   search.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(reload, 250); });
 
-  const newChat = () => openForm({
-    title: 'Новая переписка',
+  // Первым написать клиенту можно только в WhatsApp — по номеру телефона.
+  const newChat = () => {
+    const phones = state.channels.filter((channel) => (channel.kind ?? 'whatsapp') === 'whatsapp');
+    return openForm({
+    title: 'Новая переписка в WhatsApp',
     fields: [
       { name: 'phone', label: 'Номер телефона клиента', required: true, width: 'full' },
       { name: 'title', label: 'Как подписать', width: 'full' },
       // С какого номера писать — если номеров несколько (у администратора — все города).
-      state.channels.length > 1
+      phones.length > 1
         ? { name: 'channel_id', label: 'С какого номера писать', type: 'select', width: 'full',
-            value: state.channels[0].id,
-            options: state.channels.map((channel) => ({
+            value: phones[0].id,
+            options: phones.map((channel) => ({
               value: channel.id, label: [channelLabel(channel), channel.city_name].filter(Boolean).join(' — '),
             })) }
         : null,
@@ -134,7 +139,8 @@ export async function renderChats(root, params = {}) {
       await reload();
       await openChat(chat.id);
     },
-  });
+    });
+  };
 
   root.append(
     el('div', { class: 'topbar' }, [
@@ -144,7 +150,7 @@ export async function renderChats(root, params = {}) {
       el('div', { class: 'toolbar' }, [
         search,
         store.isAdmin()
-          ? el('button', { class: 'btn secondary', onclick: () => { location.hash = '#/settings'; } }, 'Номера WhatsApp')
+          ? el('button', { class: 'btn secondary', onclick: () => { location.hash = '#/settings'; } }, 'Каналы')
           : null,
         allow('chats', 'create', el('button', { class: 'btn', onclick: newChat }, '+ ПЕРЕПИСКА')),
       ]),

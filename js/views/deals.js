@@ -611,6 +611,9 @@ function renderColumn(stage, reload) {
       el('div', { class: 'sum', text: formatMoney(stage.amount) }),
     ]),
     items,
+    stage.count > stage.items.length
+      ? el('div', { class: 'column-more muted', text: `Показаны последние ${stage.items.length} из ${stage.count}. Старые — через поиск` })
+      : null,
   ]);
 
   node.addEventListener('dragover', (event) => { event.preventDefault(); node.classList.add('drop-target'); });

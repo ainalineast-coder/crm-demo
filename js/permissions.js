@@ -38,7 +38,7 @@ export const SECTIONS = {
   // Переписка «моя», если клиент или сделка закреплены за сотрудником,
   // и «свободна», если ни сделка, ни клиент ещё никому не отданы.
   chats: {
-    label: 'imBox (WhatsApp)',
+    label: 'imBox (переписки)',
     table: 'chats',
     own: (a) => `(EXISTS (SELECT 1 FROM deals od WHERE od.id = ${a}.deal_id AND od.owner_id = ?)
                  OR EXISTS (SELECT 1 FROM contacts oc WHERE oc.id = ${a}.contact_id AND oc.owner_id = ?))`,
@@ -198,6 +198,15 @@ export const DEFAULT_ROLES = [
     permissions: {
       ...every({ create: false, read: 'all', edit: 'none', delete: 'none' }),
       options: { amounts: 'read', contacts: 'read', export: true, assign: 'own' },
+    },
+  },
+  {
+    // «Общий доступ» без прав владельца: работает с заявками всех городов,
+    // передаёт их между городами и менеджерами, но не видит настройки, сотрудников и роли.
+    name: 'Мультименеджер — все города',
+    permissions: {
+      ...every({ create: true, read: 'all', edit: 'all', delete: 'none' }),
+      options: { export: true, assign: 'all' },
     },
   },
 ];

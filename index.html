@@ -404,6 +404,8 @@ tfoot td { font-weight: 600; }
   display: grid; place-items: center; font-size: 12px; font-weight: 600; flex: none;
 }
 .chat-item .row { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+.chat-item .row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-item .source { font-size: 11px; margin-left: auto; white-space: nowrap; }
 .chat-item .preview {
   font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
@@ -457,6 +459,9 @@ tfoot td { font-weight: 600; }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) .impersonation-bar { background: #3a2f10; color: #f4d68a; border-color: #5c4a18; }
 }
+
+/* Закрытые колонки канбана показывают последние сделки — подсказка под ними. */
+.column-more { padding: 8px 10px; font-size: 12px; text-align: center; }
 
 
 /* Демо-витрина живёт внутри страницы, поэтому высота считается от неё, а не от окна. */
