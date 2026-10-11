@@ -3,7 +3,7 @@ import {
   LEAD_TYPE_LABELS, currentPipeline, findStage, loadPipelines, pipelineList,
   setCurrentPipeline, stageOptions, stagesOf,
 } from '../pipelines.js';
-import { allow, cityParam, cityTag, store } from '../store.js';
+import { allow, allowRow, cityParam, cityTag, store } from '../store.js';
 import {
   ACTIVITY_LABELS, confirmDialog, el, formatDate, formatDateTime, formatMoney,
   initials, openForm, openPanel, seriesColor, tagChip, toast,
@@ -78,7 +78,10 @@ export async function openDealForm(deal, onDone, pipelineId) {
     { name: 'stage_id', label: 'Этап', type: 'select', value: deal?.stage_id, options: stageOptions(pipeline) },
     { name: 'lead_type', label: 'Тип клиента', type: 'select', value: deal?.lead_type ?? 'individual',
       options: Object.entries(LEAD_TYPE_LABELS).map(([value, label]) => ({ value, label })) },
-    { name: 'amount', label: 'Бюджет', type: 'number', step: '0.01', value: deal?.amount ?? 0 },
+    // Бюджет, закрытый ролью, при правке не показываем — заводить сделку с суммой можно.
+    !isEdit || store.option('amounts') === 'edit'
+      ? { name: 'amount', label: 'Бюджет', type: 'number', step: '0.01', value: deal?.amount ?? 0 }
+      : null,
     { name: 'currency', label: 'Валюта', type: 'select', value: deal?.currency ?? 'KZT',
       options: CURRENCIES.map((code) => ({ value: code, label: code })) },
     { name: 'owner_id', label: 'Ответственный', type: 'select', value: deal?.owner_id, options: options.users },
@@ -145,7 +148,7 @@ export async function openDealForm(deal, onDone, pipelineId) {
 }
 
 /** Позиции сделки: товары, количество и сумма. */
-function itemsBlock(dealId, onChange) {
+function itemsBlock(dealId, onChange, canEdit) {
   const box = el('div', { style: 'display:grid;gap:6px' });
 
   const draw = (items) => {
@@ -154,11 +157,11 @@ function itemsBlock(dealId, onChange) {
         ? items.map((item) => el('div', { style: 'display:flex;gap:8px;align-items:center' }, [
             el('span', { style: 'flex:1', text: `${item.name} × ${item.quantity}` }),
             el('span', { class: 'muted', text: formatMoney(item.amount) }),
-            allow('deals', 'edit', el('button', { class: 'btn ghost', title: 'Убрать', onclick: async () => {
+            canEdit && el('button', { class: 'btn ghost', title: 'Убрать', onclick: async () => {
               const result = await api.delete(`/api/deals/${dealId}/items/${item.id}`);
               draw(result.items);
               await onChange?.();
-            } }, '✕')),
+            } }, '✕'),
           ]))
         : [el('div', { class: 'muted', text: 'Товары не добавлены' })]),
     );
@@ -192,12 +195,12 @@ function itemsBlock(dealId, onChange) {
 
   return {
     node: box,
-    addButton: allow('deals', 'edit', el('button', { class: 'btn secondary', onclick: add }, '+ Товар')),
+    addButton: canEdit ? el('button', { class: 'btn secondary', onclick: add }, '+ Товар') : null,
   };
 }
 
 /** Файлы сделки: загрузка и скачивание. */
-function filesBlock(dealId) {
+function filesBlock(dealId, { canEdit, canDelete }) {
   const box = el('div', { style: 'display:grid;gap:6px' });
   const input = el('input', { type: 'file', multiple: 'multiple', style: 'display:none' });
 
@@ -219,11 +222,11 @@ function filesBlock(dealId) {
               text: file.name,
             }),
             el('span', { class: 'muted', text: `${Math.max(1, Math.round(file.size / 1024))} КБ` }),
-            allow('deals', 'full', el('button', { class: 'btn ghost', onclick: async () => {
+            canDelete && el('button', { class: 'btn ghost', onclick: async () => {
               if (!await confirmDialog(`Удалить файл «${file.name}»?`)) return;
               await api.delete(`/api/files/${file.id}`);
               draw((await api.get('/api/files', { dealId })).items);
-            } }, '✕')),
+            } }, '✕'),
           ]))
         : [el('div', { class: 'muted', text: 'Файлов нет' })]),
       input,
@@ -249,15 +252,17 @@ function filesBlock(dealId) {
 
   return {
     node: box,
-    addButton: allow('deals', 'edit', el('button', { class: 'btn secondary', onclick: () => input.click() }, '+ Файл')),
+    addButton: canEdit ? el('button', { class: 'btn secondary', onclick: () => input.click() }, '+ Файл') : null,
   };
 }
 
 /** Карточка сделки: данные, товары, файлы, задачи, примечания и история. */
 export async function openDealDetails(id, onDone) {
   const deal = await api.get(`/api/deals/${id}`);
-  const items = itemsBlock(id, onDone);
-  const files = filesBlock(id);
+  // Права на эту сделку: «свои» можно править, свободную — только взять в работу.
+  const canEdit = store.canRow('deals', 'edit', deal);
+  const items = itemsBlock(id, onDone, canEdit);
+  const files = filesBlock(id, { canEdit, canDelete: store.canRow('deals', 'delete', deal) });
 
   const timeline = el('div', { class: 'timeline' });
   const renderTimeline = (items) => {
@@ -297,7 +302,7 @@ export async function openDealDetails(id, onDone) {
   ]);
 
   // Без права правки этап только показывается.
-  const stageSelect = el('select', { disabled: !store.can('deals', 'edit') }, stagesOf(deal.pipeline_id).map((stage) =>
+  const stageSelect = el('select', { disabled: !canEdit }, stagesOf(deal.pipeline_id).map((stage) =>
     el('option', { value: stage.id, selected: stage.id === deal.stage_id }, stage.name)));
   stageSelect.addEventListener('change', async () => {
     try {
@@ -355,13 +360,14 @@ export async function openDealDetails(id, onDone) {
       ]),
       el('div', {}, [
         el('div', { class: 'section-title', text: 'История' }),
-        allow('deals', 'edit', el('div', { style: 'display:flex;gap:8px;margin-bottom:12px' }, [typeSelect, noteInput,
+        allowRow('deals', 'edit', deal, el('div', { style: 'display:flex;gap:8px;margin-bottom:12px' }, [typeSelect, noteInput,
           el('button', { class: 'btn', onclick: addNote }, 'Добавить')])),
         timeline,
       ]),
     ]),
     actions: [
-      allow('calls', 'edit', el('button', { class: 'btn secondary', title: 'Записать звонок по сделке', onclick: () => openForm({
+      isFree(deal) ? takeButton(deal, async () => { panel.close(); await onDone?.(); await openDealDetails(deal.id, onDone); }) : null,
+      allow('calls', 'create', el('button', { class: 'btn secondary', title: 'Записать звонок по сделке', onclick: () => openForm({
         title: 'Записать звонок',
         fields: [
           { name: 'direction', label: 'Направление', type: 'select', value: 'out',
@@ -372,7 +378,8 @@ export async function openDealDetails(id, onDone) {
               { value: 'busy', label: 'Занято' }, { value: 'failed', label: 'Не дозвонились' },
             ] },
           { name: 'duration', label: 'Длительность, сек.', type: 'number', value: 60 },
-          { name: 'phone', label: 'Номер', value: deal.contact_phone },
+          // Замаскированный номер подставлять бессмысленно.
+          { name: 'phone', label: 'Номер', value: store.option('contacts') === 'hidden' ? '' : deal.contact_phone },
           { name: 'note', label: 'Заметка', type: 'textarea', width: 'full' },
         ],
         submitLabel: 'Записать',
@@ -383,7 +390,7 @@ export async function openDealDetails(id, onDone) {
           await onDone?.();
         },
       }) }, '☎ Звонок')),
-      allow('deals', 'edit', el('button', { class: 'btn secondary', title: 'Сводка и следующий шаг от AI-помощника', onclick: async (event) => {
+      allowRow('deals', 'edit', deal, el('button', { class: 'btn secondary', title: 'Сводка и следующий шаг от AI-помощника', onclick: async (event) => {
         const button = event.target;
         button.disabled = true;
         try {
@@ -400,14 +407,14 @@ export async function openDealDetails(id, onDone) {
           button.disabled = false;
         }
       } }, '✨ Сводка AI')),
-      allow('deals', 'full', el('button', { class: 'btn danger', onclick: async () => {
+      allowRow('deals', 'delete', deal, el('button', { class: 'btn danger', onclick: async () => {
         if (!await confirmDialog('Удалить сделку вместе с её задачами и историей?')) return;
         await api.delete(`/api/deals/${deal.id}`);
         toast('Сделка удалена');
         panel.close();
         await onDone?.();
       } }, 'Удалить')),
-      allow('deals', 'edit', el('button', { class: 'btn secondary', onclick: () => { panel.close(); openDealForm(deal, onDone); } }, 'Редактировать')),
+      allowRow('deals', 'edit', deal, el('button', { class: 'btn secondary', onclick: () => { panel.close(); openDealForm(deal, onDone); } }, 'Редактировать')),
     ].filter(Boolean),
   });
 }
@@ -542,7 +549,7 @@ export async function renderDeals(root, params = {}) {
 
     const total = data.stages.reduce((sum, stage) => sum + stage.count, 0);
     const amount = data.stages.reduce((sum, stage) => sum + stage.amount, 0);
-    summary.textContent = `${total} сделок: ${formatMoney(amount)}`;
+    summary.textContent = store.option('amounts') === 'hidden' ? `${total} сделок` : `${total} сделок: ${formatMoney(amount)}`;
   };
 
   const [users, tags] = await Promise.all([store.users(), store.tags()]);
@@ -581,7 +588,7 @@ export async function renderDeals(root, params = {}) {
         store.isAdmin()
           ? el('button', { class: 'btn secondary', title: 'Добавить воронку', onclick: () => openPipelineForm(refresh) }, '+ ВОРОНКА')
           : null,
-        allow('deals', 'edit', el('button', { class: 'btn', onclick: () => openDealForm(null, reload, currentPipeline()?.id) }, '+ НОВАЯ СДЕЛКА')),
+        allow('deals', 'create', el('button', { class: 'btn', onclick: () => openDealForm(null, reload, currentPipeline()?.id) }, '+ НОВАЯ СДЕЛКА')),
       ]),
     ]),
     el('div', { class: 'content' }, [board]),
@@ -626,13 +633,36 @@ function renderColumn(stage, reload) {
   return node;
 }
 
+/** Свободная заявка — без ответственного: её может взять любой менеджер города. */
+const isFree = (deal) => deal.owner_id == null;
+
+function takeButton(deal, onTaken) {
+  if (store.isAdmin() || !store.can('deals', 'edit')) return null;
+  return el('button', {
+    class: 'btn take',
+    onclick: async (event) => {
+      event.stopPropagation();
+      event.currentTarget.disabled = true;
+      try {
+        await api.post(`/api/deals/${deal.id}/take`, {});
+        toast('Заявка ваша — теперь её видите только вы и руководитель');
+        await onTaken?.();
+      } catch (error) {
+        toast(error.message, 'error');
+        await onTaken?.();
+      }
+    },
+  }, 'Взять в работу');
+}
+
 function renderCard(deal, reload) {
   const client = deal.contact_name || deal.company_name || 'Клиент не указан';
+  const free = isFree(deal);
 
   const card = el('div', {
-    class: 'deal-card',
-    // Перетаскивать по этапам может только тот, кто правит сделки.
-    draggable: store.can('deals', 'edit') ? 'true' : 'false',
+    class: `deal-card${free ? ' free' : ''}`,
+    // Перетаскивать по этапам можно только сделки, которые сотрудник вправе править.
+    draggable: store.canRow('deals', 'edit', deal) ? 'true' : 'false',
     onclick: () => openDealDetails(deal.id, reload),
   }, [
     el('div', { class: 'title', text: deal.title }),
@@ -642,8 +672,11 @@ function renderCard(deal, reload) {
     cityTag(deal),
     el('div', { class: 'row' }, [
       el('span', { class: 'muted', style: 'font-size:11px', text: formatDate(deal.expected_close_date) }),
-      el('span', { class: 'owner', title: deal.owner_name ?? '', text: initials(deal.owner_name) }),
+      free
+        ? el('span', { class: 'badge free-badge', text: 'свободная' })
+        : el('span', { class: 'owner', title: deal.owner_name ?? '', text: initials(deal.owner_name) }),
     ]),
+    free ? takeButton(deal, reload) : null,
   ]);
 
   card.addEventListener('dragstart', (event) => {

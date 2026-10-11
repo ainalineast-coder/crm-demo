@@ -628,7 +628,8 @@ export async function renderAnalytics(root) {
         tabsBox,
       ]),
       el('div', { class: 'toolbar' }, [
-        el('button', { class: 'btn secondary', onclick: exportCsv }, '↓ Выгрузить CSV'),
+        // Выгрузку данных роль разрешает отдельно.
+        store.option('export') ? el('button', { class: 'btn secondary', onclick: exportCsv }, '↓ Выгрузить CSV') : null,
       ]),
     ]),
     el('div', { class: 'content stack' }, [

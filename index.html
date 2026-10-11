@@ -437,8 +437,26 @@ tfoot td { font-weight: 600; }
 }
 
 /* Редактор роли: раздел — уровень — охват */
-.role-matrix select { min-width: 190px; }
+.role-matrix select { min-width: 150px; }
+.role-matrix td, .role-matrix th { padding-left: 8px; padding-right: 8px; }
+/* Окно роли шире обычной формы: в таблице пять колонок. */
+.modal:has(.role-matrix) { width: min(980px, 96vw); max-width: 96vw; }
 .role-matrix td { vertical-align: middle; }
+
+/* Свободная заявка — её может взять любой менеджер города */
+.deal-card.free { border-left: 3px solid var(--accent); }
+.badge.free-badge { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.deal-card .btn.take { width: 100%; margin-top: 8px; padding: 5px 10px; }
+
+/* Режим «вход как сотрудник» */
+.impersonation-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+  padding: 8px 20px; background: #fff4d6; color: #6b4a00; border-bottom: 1px solid #f0d58a; font-size: 13px;
+}
+:root[data-theme="dark"] .impersonation-bar { background: #3a2f10; color: #f4d68a; border-color: #5c4a18; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .impersonation-bar { background: #3a2f10; color: #f4d68a; border-color: #5c4a18; }
+}
 
 
 /* Демо-витрина живёт внутри страницы, поэтому высота считается от неё, а не от окна. */

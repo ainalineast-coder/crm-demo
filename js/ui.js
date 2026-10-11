@@ -24,13 +24,15 @@ export const PRIORITY_LABELS = { low: 'Низкий', normal: 'Обычный', 
 export const ACTIVITY_LABELS = { note: 'Заметка', call: 'Звонок', meeting: 'Встреча', email: 'Письмо', system: 'Система' };
 
 /** Суммы в тенге показываем символом ₸, как в amoCRM, а не кодом KZT. */
-export const formatMoney = (amount, currency = 'KZT') =>
-  new Intl.NumberFormat('ru-RU', {
+// null — сумма скрыта ролью доступа.
+export const formatMoney = (amount, currency = 'KZT') => (amount === null
+  ? 'скрыто'
+  : new Intl.NumberFormat('ru-RU', {
     style: 'currency',
     currency,
     currencyDisplay: 'narrowSymbol',
     maximumFractionDigits: 0,
-  }).format(Number(amount ?? 0));
+  }).format(Number(amount ?? 0)));
 
 export const formatNumber = (value) => new Intl.NumberFormat('ru-RU').format(Number(value ?? 0));
 

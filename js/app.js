@@ -50,7 +50,7 @@ function renderShell() {
 
   const cityBar = el('div', { class: 'city-bar', hidden: true });
   const view = el('div', { style: 'display:contents' });
-  const workspace = el('div', { class: 'workspace' }, [cityBar, view]);
+  const workspace = el('div', { class: 'workspace' }, [impersonationBar(), cityBar, view]);
 
   const logout = async () => {
     try { await api.post('/api/auth/logout'); } catch { /* сессия уже недействительна */ }
@@ -79,6 +79,27 @@ function renderShell() {
   appRoot.className = '';
   clear(appRoot).append(layout);
   return { workspace, view, cityBar, nav };
+}
+
+/** Администратор вошёл как сотрудник: напоминание и возврат к себе. */
+function impersonationBar() {
+  const admin = store.user.impersonator;
+  if (!admin) return null;
+  return el('div', { class: 'impersonation-bar' }, [
+    el('span', {}, [
+      'Вы смотрите CRM как ', el('strong', { text: store.user.name }),
+      ` (${store.user.role_name}) — видите ровно то, что видит сотрудник.`,
+    ]),
+    el('button', {
+      class: 'btn secondary',
+      onclick: async () => {
+        await api.post('/api/auth/return', {});
+        // Перезагрузка — чтобы вся страница (и меню, и демо-переключатель) снова была от лица администратора.
+        location.hash = '#/settings';
+        location.reload();
+      },
+    }, `Вернуться к учётной записи ${admin.name}`),
+  ]);
 }
 
 /** Переключатель городов: администратор смотрит все города вместе или один. */

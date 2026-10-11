@@ -56,7 +56,7 @@ export async function renderProducts(root) {
       el('td', { class: 'num', text: `${formatNumber(product.stock)} ${product.unit ?? ''}` }),
       el('td', { class: 'actions' }, [
         allow('products', 'edit', el('button', { class: 'btn ghost', onclick: () => openProductForm(product, reload) }, '✎')),
-        allow('products', 'full', el('button', { class: 'btn ghost', onclick: async () => {
+        allow('products', 'delete', el('button', { class: 'btn ghost', onclick: async () => {
           if (!await confirmDialog(`Удалить товар «${product.name}»?`)) return;
           await api.delete(`/api/products/${product.id}`);
           toast('Товар удалён');
@@ -75,7 +75,7 @@ export async function renderProducts(root) {
       el('div', { style: 'display:flex;align-items:center;gap:12px' }, [el('h1', { text: 'Товары' }), counter]),
       el('div', { class: 'toolbar' }, [
         search, groupSelect,
-        allow('products', 'edit', el('button', { class: 'btn', onclick: () => openProductForm(null, reload) }, '+ ДОБАВИТЬ ТОВАР')),
+        allow('products', 'create', el('button', { class: 'btn', onclick: () => openProductForm(null, reload) }, '+ ДОБАВИТЬ ТОВАР')),
       ]),
     ]),
     el('div', { class: 'content' }, [el('div', { class: 'card' }, [

@@ -5,7 +5,11 @@ import { contactName, el } from './ui.js';
 const cache = { users: null, companies: null, contacts: null, tags: null, cities: null };
 
 const CITY_KEY = 'crm.cityId';
-const LEVELS = ['none', 'read', 'edit', 'full'];
+// Поле ответственного у записей раздела — для охвата «только свои».
+const OWN_FIELDS = {
+  deals: 'owner_id', contacts: 'owner_id', companies: 'owner_id', tasks: 'assignee_id',
+  emails: 'user_id', calls: 'user_id',
+};
 const readCity = () => {
   try { return localStorage.getItem(CITY_KEY) ?? ''; } catch { return ''; }
 };
@@ -20,20 +24,45 @@ export const store = {
   },
 
   /**
-   * Права из роли доступа: can('deals', 'edit') — может ли править сделки.
+   * Права из роли доступа: can('deals', 'create') — может ли заводить сделки;
+   * edit — создавать или править хоть что-то, delete — удалять хоть что-то.
    * Кнопки по ним прячутся, но решает всё равно сервер.
    */
   can(section, need = 'read') {
     if (this.isAdmin()) return true;
-    const level = this.user?.permissions?.[section]?.level ?? 'none';
-    return LEVELS.indexOf(level) >= LEVELS.indexOf(need);
+    const access = this.user?.permissions?.[section];
+    if (!access) return false;
+    if (need === 'create') return access.create;
+    if (need === 'edit') return access.create || access.edit !== 'none';
+    if (need === 'delete' || need === 'full') return access.delete !== 'none';
+    return access.read !== 'none';
+  },
+
+  /** Можно ли править (edit) или удалять (delete) именно эту запись. */
+  canRow(section, action, row) {
+    if (this.isAdmin()) return true;
+    const scope = this.user?.permissions?.[section]?.[action] ?? 'none';
+    if (scope === 'none' || !row) return false;
+    if (scope === 'all') return true;
+    const sameCity = (row.city_id ?? null) === (this.user.city_id ?? null);
+    if (scope === 'city') return sameCity;
+    const field = OWN_FIELDS[section];
+    if (!field) return true; // переписку проверит сервер
+    const own = row[field] === this.user.id;
+    return scope === 'own' ? own : own || (sameCity && row[field] == null);
+  },
+
+  /** Настройка роли: суммы, контакты клиентов, выгрузка. Администратору можно всё. */
+  option(name) {
+    if (this.isAdmin()) return { amounts: 'edit', contacts: 'edit', export: true, assign: 'all' }[name];
+    return this.user?.options?.[name];
   },
 
   /** Видны ли записи других городов — тогда нужен переключатель городов. */
   seesAllCities() {
     if (this.isAdmin()) return true;
     return Object.entries(this.user?.permissions ?? {})
-      .some(([section, access]) => section !== 'products' && access.level !== 'none' && access.scope === 'all');
+      .some(([section, access]) => section !== 'products' && access.read === 'all');
   },
 
   setCity(cityId) {
@@ -93,6 +122,9 @@ export const cityParam = () => (store.seesAllCities() && store.cityId ? store.ci
 
 /** Кнопка или поле — только если хватает прав, иначе ничего. */
 export const allow = (section, need, node) => (store.can(section, need) ? node : null);
+
+/** То же для конкретной записи: allowRow('deals', 'delete', deal, кнопка). */
+export const allowRow = (section, action, row, node) => (store.canRow(section, action, row) ? node : null);
 
 /** Подпись города у записи — нужна администратору, когда он смотрит все города сразу. */
 export const cityTag = (row) => (store.seesAllCities() && !store.cityId && row?.city_name

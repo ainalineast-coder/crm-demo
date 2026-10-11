@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { allow, cityParam } from '../store.js';
+import { allow, allowRow, cityParam } from '../store.js';
 import { confirmDialog, el, formatDateTime, openForm, toast } from '../ui.js';
 
 /** Почта: список писем и отправка нового. */
@@ -56,12 +56,12 @@ export async function renderEmails(root) {
       })),
       el('td', { class: 'muted', text: formatDateTime(email.created_at) }),
       el('td', { class: 'actions' }, [
-        email.direction === 'in' && allow('emails', 'edit', true)
+        email.direction === 'in' && allow('emails', 'create', true)
           ? el('button', { class: 'btn ghost', title: 'Ответить', onclick: () => compose({
               to: email.from_addr, subject: `Re: ${email.subject ?? ''}`,
             }) }, '↩')
           : null,
-        allow('emails', 'full', el('button', { class: 'btn ghost', onclick: async () => {
+        allowRow('emails', 'delete', email, el('button', { class: 'btn ghost', onclick: async () => {
           if (!await confirmDialog('Удалить письмо из истории?')) return;
           await api.delete(`/api/emails/${email.id}`);
           await reload();
@@ -97,7 +97,7 @@ export async function renderEmails(root) {
       ]),
       el('div', { class: 'toolbar' }, [
         search,
-        allow('emails', 'edit', el('button', { class: 'btn', onclick: () => compose() }, '+ НАПИСАТЬ')),
+        allow('emails', 'create', el('button', { class: 'btn', onclick: () => compose() }, '+ НАПИСАТЬ')),
       ]),
     ]),
     el('div', { class: 'content' }, [el('div', { class: 'card' }, [

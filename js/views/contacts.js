@@ -1,17 +1,21 @@
 import { api } from '../api.js';
-import { allow, cityParam, cityTag, store } from '../store.js';
+import { allow, allowRow, cityParam, cityTag, store } from '../store.js';
 import { confirmDialog, contactName, el, openForm, toast } from '../ui.js';
 
-const fields = (options, contact = {}) => [
-  { name: 'last_name', label: 'Фамилия', value: contact.last_name },
-  { name: 'first_name', label: 'Имя', required: true, value: contact.first_name },
-  { name: 'position', label: 'Должность', value: contact.position },
-  { name: 'company_id', label: 'Компания', type: 'select', value: contact.company_id, options: options.companies },
-  { name: 'email', label: 'Email', type: 'email', value: contact.email },
-  { name: 'phone', label: 'Телефон', value: contact.phone },
-  { name: 'owner_id', label: 'Ответственный', type: 'select', value: contact.owner_id, options: options.users },
-  { name: 'notes', label: 'Заметки', type: 'textarea', value: contact.notes, width: 'full' },
-];
+// Телефон и email, закрытые ролью, при правке не показываем: новым клиентам их вписать можно.
+const fields = (options, contact = {}) => {
+  const contactsEditable = !contact.id || store.option('contacts') === 'edit';
+  return [
+    { name: 'last_name', label: 'Фамилия', value: contact.last_name },
+    { name: 'first_name', label: 'Имя', required: true, value: contact.first_name },
+    { name: 'position', label: 'Должность', value: contact.position },
+    { name: 'company_id', label: 'Компания', type: 'select', value: contact.company_id, options: options.companies },
+    contactsEditable ? { name: 'email', label: 'Email', type: 'email', value: contact.email } : null,
+    contactsEditable ? { name: 'phone', label: 'Телефон', value: contact.phone } : null,
+    { name: 'owner_id', label: 'Ответственный', type: 'select', value: contact.owner_id, options: options.users },
+    { name: 'notes', label: 'Заметки', type: 'textarea', value: contact.notes, width: 'full' },
+  ].filter(Boolean);
+};
 
 async function openContactForm(contact, onDone) {
   const options = await store.options();
@@ -50,8 +54,8 @@ export async function renderContacts(root) {
         el('td', {}, contact.phone ? el('a', { href: `tel:${contact.phone.replace(/\s/g, '')}` }, contact.phone) : '—'),
         el('td', {}, [contact.owner_name ?? '—', cityTag(contact)]),
         el('td', { class: 'actions' }, [
-          allow('contacts', 'edit', el('button', { class: 'btn ghost', onclick: () => openContactForm(contact, reload) }, '✎')),
-          allow('contacts', 'full', el('button', { class: 'btn ghost', onclick: async () => {
+          allowRow('contacts', 'edit', contact, el('button', { class: 'btn ghost', onclick: () => openContactForm(contact, reload) }, '✎')),
+          allowRow('contacts', 'delete', contact, el('button', { class: 'btn ghost', onclick: async () => {
             if (!await confirmDialog(`Удалить контакт «${contactName(contact)}»?`)) return;
             await api.delete(`/api/contacts/${contact.id}`);
             store.invalidate('contacts');
@@ -75,7 +79,7 @@ export async function renderContacts(root) {
     el('div', { class: 'topbar' }, [
       el('h1', { text: 'Контакты' }),
       el('div', { class: 'toolbar' }, [counter, companyFilter, search,
-        allow('contacts', 'edit', el('button', { class: 'btn', onclick: () => openContactForm(null, reload) }, '+ Контакт'))]),
+        allow('contacts', 'create', el('button', { class: 'btn', onclick: () => openContactForm(null, reload) }, '+ Контакт'))]),
     ]),
     el('div', { class: 'content' }, [el('div', { class: 'card' }, [
       el('div', { class: 'table-wrap' }, el('table', {}, [

@@ -146,7 +146,7 @@ export async function renderChats(root, params = {}) {
         store.isAdmin()
           ? el('button', { class: 'btn secondary', onclick: () => { location.hash = '#/settings'; } }, 'Номера WhatsApp')
           : null,
-        allow('chats', 'edit', el('button', { class: 'btn', onclick: newChat }, '+ ПЕРЕПИСКА')),
+        allow('chats', 'create', el('button', { class: 'btn', onclick: newChat }, '+ ПЕРЕПИСКА')),
       ]),
     ]),
     el('div', { class: 'content' }, [el('div', { class: 'chat-layout' }, [list, pane])]),

@@ -4,9 +4,12 @@
  * Экраны приложения используют этот модуль вместо public/js/api.js.
  */
 import { USERS, buildDataset } from './demo-data.js';
+// Скрытие сумм и контактов — тот же код, что на сервере (src/middleware/fields.js).
+import { maskBody, maskRules, stripClosedFields } from './fields.js';
 // Права и подписи — из того же файла, что и на сервере (src/lib/permissions.js).
 import {
-  ADMIN_PERMISSIONS, LEVELS, LEVEL_LABELS, SCOPES, SCOPE_LABELS, SECTIONS, normalizePermissions,
+  ACTION_LABELS, ADMIN_ROLE, ASSIGN_SCOPES, FIELD_GROUPS, FIELD_LEVELS, FIELD_LEVEL_LABELS, SCOPES, SCOPE_LABELS,
+  SECTIONS, normalizeRole,
 } from './permissions.js';
 // Константы берём из того же файла, что и сервер (src/lib/pipelines.js).
 import { CURRENCIES, LEAD_TYPES, STAGE_COLORS, buildStages, normalizeTag } from './stage-constants.js';
@@ -50,6 +53,28 @@ const savedUser = () => {
 };
 let session = savedUser() ?? DEMO_USER;
 
+// «Войти как сотрудник»: администратор, к которому можно вернуться.
+const IMPERSONATOR_KEY = 'crm.demoImpersonator';
+let impersonator = (() => {
+  try {
+    return db.users.find((user) => user.id === Number(sessionStorage.getItem(IMPERSONATOR_KEY))) ?? null;
+  } catch {
+    return null;
+  }
+})();
+
+/** Сохранить данные демо и сотрудника, от имени которого открыть страницу после перезагрузки. */
+function keepForReload(email) {
+  try {
+    sessionStorage.setItem(DEMO_USER_KEY, email);
+    sessionStorage.setItem(DEMO_DB_KEY, JSON.stringify(db));
+    if (impersonator) sessionStorage.setItem(IMPERSONATOR_KEY, String(impersonator.id));
+    else sessionStorage.removeItem(IMPERSONATOR_KEY);
+  } catch {
+    // Без хранилища переход не переживёт перезагрузку.
+  }
+}
+
 /** Сотрудники для переключателя «Смотреть как» на демо-странице. */
 export const demoAccounts = () => USERS.map((user) => ({
   email: user.email,
@@ -59,13 +84,8 @@ export const demoAccounts = () => USERS.map((user) => ({
 
 /** Перезагружает демо от имени другого сотрудника (данные демо при этом сбрасываются). */
 export function viewAs(email) {
-  try {
-    sessionStorage.setItem(DEMO_USER_KEY, email);
-    sessionStorage.setItem(DEMO_DB_KEY, JSON.stringify(db));
-  } catch {
-    // Без хранилища выбор не переживёт перезагрузку — входим вручную.
-    session = db.users.find((user) => user.email === email) ?? session;
-  }
+  impersonator = null;
+  keepForReload(email);
   location.reload();
 }
 
@@ -88,51 +108,64 @@ const cityName = (id) => byId(db.cities, id)?.name ?? null;
 // --- Права доступа: те же правила, что на сервере (src/lib/scope.js) ---
 const isAdmin = () => session?.role === 'admin';
 const roleOf = (user) => (user?.role === 'admin' ? null : byId(db.roles, user?.role_id));
-const permissionsOf = (user) => (user?.role === 'admin'
-  ? ADMIN_PERMISSIONS
-  : normalizePermissions(roleOf(user)?.permissions));
-const access = (section) => permissionsOf(session)[section] ?? { level: 'none', scope: 'own' };
-const can = (section, need = 'read') => LEVELS.indexOf(access(section).level) >= LEVELS.indexOf(need);
+/** Права и настройки роли пользователя: { permissions, options }. */
+const accessOfUser = (user) => (user?.role === 'admin'
+  ? ADMIN_ROLE
+  : normalizeRole({ ...(roleOf(user)?.permissions ?? {}), options: roleOf(user)?.options }));
+const permissionsOf = (user) => accessOfUser(user).permissions;
+const optionsOf = (user) => accessOfUser(user).options;
+const access = (section) => permissionsOf(session)[section]
+  ?? { create: false, read: 'none', edit: 'none', delete: 'none' };
+const can = (section, need = 'read') => {
+  const item = access(section);
+  if (need === 'create') return item.create;
+  if (need === 'write') return item.create || item.edit !== 'none';
+  return (item[need] ?? 'none') !== 'none';
+};
+const NEED_LABELS = {
+  read: 'нет доступа', create: 'нельзя создавать записи', write: 'только просмотр',
+  edit: 'нельзя править записи', delete: 'нельзя удалять записи',
+};
 const assertAccess = (section, need = 'read') => {
   if (can(section, need)) return;
-  const what = need === 'read' ? 'нет доступа' : `нужен уровень «${LEVEL_LABELS[need]}»`;
-  throw new ApiError(403, `Раздел «${SECTIONS[section].label}»: ${what}`);
+  throw new ApiError(403, `Раздел «${SECTIONS[section].label}»: ${NEED_LABELS[need] ?? 'нет доступа'}`);
 };
 
-// «Моя запись» для охвата «Только свои».
-const OWN = {
-  deals: (row) => row.owner_id === session?.id,
-  contacts: (row) => row.owner_id === session?.id,
-  companies: (row) => row.owner_id === session?.id,
-  tasks: (row) => row.assignee_id === session?.id,
-  chats: (row) => byId(db.deals, row.deal_id)?.owner_id === session?.id
-    || byId(db.contacts, row.contact_id)?.owner_id === session?.id,
-  emails: (row) => row.user_id === session?.id,
-  calls: (row) => row.user_id === session?.id,
-  analytics: (row) => row.owner_id === session?.id,
+// «Моя запись» для охвата «Только свои» и «свободная» — без ответственного.
+const OWNER_FIELD = {
+  deals: 'owner_id', contacts: 'owner_id', companies: 'owner_id', tasks: 'assignee_id',
+  emails: 'user_id', calls: 'user_id', analytics: 'owner_id',
 };
+const isOwn = (section, row) => (section === 'chats'
+  ? byId(db.deals, row.deal_id)?.owner_id === session?.id || byId(db.contacts, row.contact_id)?.owner_id === session?.id
+  : row[OWNER_FIELD[section]] === session?.id);
+const isFreeRow = (section, row) => (section === 'chats'
+  ? !byId(db.deals, row.deal_id)?.owner_id && !byId(db.contacts, row.contact_id)?.owner_id
+  : row[OWNER_FIELD[section]] == null);
 const requestedCity = (params = {}) => (row) => {
   if (params.cityId === 'none') return (row.city_id ?? null) === null;
   if (Number(params.cityId) > 0) return row.city_id === Number(params.cityId);
   return true;
 };
-/** Фильтр записей раздела по уровню и охвату роли (и выбранному городу). */
-const inScope = (section, params = {}) => (row) => {
+/** Фильтр записей раздела по охвату действия (просмотр, правка, удаление) и выбранному городу. */
+const inScope = (section, params = {}, action = 'read') => (row) => {
   if (!row) return false;
-  const { level, scope } = access(section);
-  if (level === 'none') return false;
+  const scope = access(section)[action] ?? 'none';
+  if (scope === 'none') return false;
   if (SECTIONS[section].global || isAdmin()) return requestedCity(params)(row);
   // «Все города» — записи городов; общие записи без города (номер владельца) — только администратору.
   if (scope === 'all') return (row.city_id ?? null) !== null && requestedCity(params)(row);
-  if (scope === 'city') return (row.city_id ?? null) === (session?.city_id ?? null);
-  return OWN[section](row);
+  const sameCity = (row.city_id ?? null) === (session?.city_id ?? null);
+  if (scope === 'city') return sameCity;
+  if (scope === 'own') return isOwn(section, row);
+  return isOwn(section, row) || (sameCity && isFreeRow(section, row));
 };
 const seesAllCities = () => isAdmin() || Object.entries(permissionsOf(session))
-  .some(([key, item]) => !SECTIONS[key]?.global && item.level !== 'none' && item.scope === 'all');
+  .some(([key, item]) => !SECTIONS[key]?.global && item.read === 'all');
 /** Сотрудники в списках и отчётах раздела: свои / коллеги города / все. */
 const peopleIn = (section, params = {}) => (user) => {
-  const { level, scope } = access(section);
-  if (level === 'none') return false;
+  const scope = access(section).read;
+  if (scope === 'none') return false;
   if (isAdmin() || scope === 'all') return requestedCity(params)(user);
   if (scope === 'city') return (user.city_id ?? null) === (session?.city_id ?? null);
   return user.id === session?.id;
@@ -142,22 +175,30 @@ const usersIn = (params = {}) => (user) => (seesAllCities()
   : (user.city_id ?? null) === (session?.city_id ?? null));
 const channelsIn = (params = {}) => (channel) => {
   if (isAdmin()) return requestedCity(params)(channel);
-  if (access('chats').scope === 'all') return (channel.city_id ?? null) !== null && requestedCity(params)(channel);
+  if (access('chats').read === 'all') return (channel.city_id ?? null) !== null && requestedCity(params)(channel);
   return (channel.city_id ?? null) === (session?.city_id ?? null);
 };
-const visible = (section, id, message = 'Не найдено') => {
+/** Запись, которую видно (иначе 404); для правки и удаления — ещё и право на неё (иначе 403). */
+const visible = (section, id, message = 'Не найдено', action = 'read') => {
   const row = byId(db[section], id);
   if (!inScope(section)(row)) throw new ApiError(404, message);
+  if (action !== 'read' && !inScope(section, {}, action)(row)) {
+    const scope = access(section)[action];
+    const verb = action === 'delete' ? 'Удалять' : 'Править';
+    throw new ApiError(403, scope === 'none'
+      ? `Раздел «${SECTIONS[section].label}»: ${verb.toLowerCase()} записи нельзя`
+      : `${verb} можно только записи с охватом «${SCOPE_LABELS[scope]}»`);
+  }
   return row;
 };
 const requireAdmin = () => {
   if (!isAdmin()) throw new ApiError(403, 'Недостаточно прав');
 };
-/** Ответственный: «все города» — любой, «свой город» — коллега, «только свои» — только сам. */
-const assignable = (section, userId, field = 'owner_id') => {
+/** Ответственный: решает настройка роли «кого назначать» — себя, коллег города, любого. */
+const assignable = (_section, userId, field = 'owner_id') => {
   const user = byId(db.users, userId);
-  const { scope } = access(section);
-  const allowed = user && (isAdmin() || scope === 'all' || user.id === session?.id
+  const scope = isAdmin() ? 'all' : optionsOf(session).assign;
+  const allowed = user && (scope === 'all' || user.id === session?.id
     || (scope === 'city' && (user.city_id ?? null) === (session?.city_id ?? null)));
   if (!allowed) {
     throw new ApiError(400, 'Ошибка валидации', {
@@ -178,15 +219,16 @@ const linkedCity = (body) => {
   return city;
 };
 const parentSection = (row) => (row.deal_id ? 'deals' : row.contact_id ? 'contacts' : row.company_id ? 'companies' : 'deals');
+const parentId = (row) => row.deal_id ?? row.contact_id ?? row.company_id;
 const checkCity = (value) => {
   if (value === null || value === undefined || value === '') return null;
   if (!byId(db.cities, value)) throw new ApiError(400, 'Ошибка валидации', { city_id: 'Город не найден' });
   return Number(value);
 };
-const canMoveCity = (section) => isAdmin() || access(section).scope === 'all';
+const canMoveCity = (section) => isAdmin() || access(section).edit === 'all';
 /** Город новой записи: при охвате «все города» — указанный, связанной записи или ответственного. */
 const cityForNew = (section, { requested, linked, owner } = {}) => {
-  if (!canMoveCity(section)) return session?.city_id ?? null;
+  if (!isAdmin() && access(section).read !== 'all') return session?.city_id ?? null;
   if (requested !== undefined) return checkCity(requested);
   if (linked !== undefined) return linked;
   if (owner?.city_id) return owner.city_id;
@@ -194,7 +236,7 @@ const cityForNew = (section, { requested, linked, owner } = {}) => {
 };
 
 /** Уровень доступа по адресу и методу — проверяется до обработчика, как middleware на сервере. */
-const NEED_BY_METHOD = { GET: 'read', POST: 'edit', PUT: 'edit', PATCH: 'edit', DELETE: 'full' };
+const NEED_BY_METHOD = { GET: 'read', POST: 'write', PUT: 'edit', PATCH: 'edit', DELETE: 'delete' };
 const GUARDS = [
   [/^\/api\/deals\/\d+\/items/, 'deals', (method) => (method === 'GET' ? 'read' : 'edit')],
   [/^\/api\/deals/, 'deals'],
@@ -216,9 +258,27 @@ function guard(method, path) {
   const need = rule[2] ? rule[2](method) : NEED_BY_METHOD[method];
   if (need) assertAccess(rule[1], need);
 }
+
+/** Взять свободную сделку: она и её свободный клиент становятся своими. */
+function takeDeal(deal) {
+  if (deal.owner_id === session.id) return;
+  if (deal.owner_id) throw new ApiError(409, `Заявку уже взял в работу ${userName(deal.owner_id) ?? 'другой сотрудник'}`);
+  deal.owner_id = session.id;
+  deal.updated_at = now();
+  const contact = contactOf(deal.contact_id);
+  if (contact && !contact.owner_id) contact.owner_id = session.id;
+  for (const task of db.tasks) if (task.deal_id === deal.id && !task.assignee_id) task.assignee_id = session.id;
+  db.activities.push({
+    id: db.nextId.activity++, type: 'system', body: `${session.name} взял(а) заявку в работу`,
+    user_id: session.id, deal_id: deal.id, company_id: null, contact_id: null, created_at: now(),
+  });
+  logEvent({ entity_type: 'deal', entity_id: deal.id, entity_name: deal.title, action: 'update',
+    field: 'Ответственный', old_value: 'свободная заявка', new_value: session.name, city_id: deal.city_id });
+}
+
 const roleView = (role) => ({
   ...role,
-  permissions: normalizePermissions(role.permissions),
+  ...normalizeRole({ ...(role.permissions ?? {}), options: role.options }),
   users_count: db.users.filter((user) => user.role === 'manager' && user.role_id === role.id).length,
 });
 const userView = (user) => ({
@@ -227,6 +287,7 @@ const userView = (user) => ({
   role_id: user.role === 'admin' ? null : (user.role_id ?? null),
   role_name: user.role === 'admin' ? 'Администратор' : (roleOf(user)?.name ?? 'Роль не назначена'),
   permissions: permissionsOf(user),
+  options: optionsOf(user),
 });
 const channelStatus = (channel) => (channel.active
   ? { provider: 'demo', ready: false, missing: ['демо-режим: сообщения не уходят наружу'] }
@@ -513,7 +574,38 @@ function campaignsReport(params) {
 const ROUTES = [
   ['GET', /^\/api\/auth\/me$/, () => {
     if (!session) throw new ApiError(401, 'Требуется авторизация');
-    return { user: userView(session) };
+    return { user: { ...userView(session), ...(impersonator ? { impersonator: { id: impersonator.id, name: impersonator.name } } : {}) } };
+  }],
+
+  ['POST', /^\/api\/auth\/return$/, () => {
+    if (!impersonator) throw new ApiError(409, 'Вы и так в своей учётной записи');
+    session = impersonator;
+    impersonator = null;
+    keepForReload(session.email);
+    return { user: userView(session), token: 'demo' };
+  }],
+
+  ['GET', /^\/api\/users\/auth-log$/, () => {
+    requireAdmin();
+    return {
+      items: [...db.authLog].sort((a, b) => b.created_at.localeCompare(a.created_at)).map((entry) => ({
+        ...entry, user_name: userName(entry.user_id),
+      })),
+    };
+  }],
+
+  ['POST', /^\/api\/users\/(\d+)\/login-as$/, (match) => {
+    requireAdmin();
+    const target = byId(db.users, match[1]);
+    if (!target || target.role === 'admin') throw new ApiError(400, 'Входить можно только от имени менеджера');
+    db.authLog.push({
+      id: db.authLog.length + 1, user_id: target.id, email: target.email, ip: 'демо', success: 1,
+      reason: `вход от имени, администратор ${session.name}`, created_at: now(),
+    });
+    impersonator = session;
+    session = target;
+    keepForReload(target.email);
+    return { user: { ...userView(target), impersonator: { id: impersonator.id, name: impersonator.name } }, token: 'demo' };
   }],
   ['POST', /^\/api\/auth\/login$/, (_m, body) => {
     const user = db.users.find((item) => item.email === String(body.email ?? '').toLowerCase());
@@ -570,8 +662,13 @@ const ROUTES = [
       sections: Object.entries(SECTIONS).map(([key, section]) => ({
         key, label: section.label, global: Boolean(section.global), readOnly: Boolean(section.readOnly),
       })),
-      levels: LEVELS.map((key) => ({ key, label: LEVEL_LABELS[key] })),
+      actions: Object.entries(ACTION_LABELS).map(([key, label]) => ({ key, label })),
       scopes: SCOPES.map((key) => ({ key, label: SCOPE_LABELS[key] })),
+      fieldGroups: Object.entries(FIELD_GROUPS).map(([key, group]) => ({ key, label: group.label })),
+      fieldLevels: FIELD_LEVELS.map((key) => ({ key, label: FIELD_LEVEL_LABELS[key] })),
+      assignScopes: ASSIGN_SCOPES.map((key) => ({
+        key, label: { own: 'Только себя', city: 'Коллег своего города', all: 'Любого сотрудника' }[key],
+      })),
     };
   }],
 
@@ -579,8 +676,35 @@ const ROUTES = [
     requireAdmin();
     const name = required(body, 'name');
     if (db.roles.some((role) => role.name.toLowerCase() === name.toLowerCase())) throw new ApiError(409, `Роль «${name}» уже есть`);
-    const role = { id: db.nextId.role++, name, permissions: normalizePermissions(body.permissions), created_at: now() };
+    const access = normalizeRole({ ...(body.permissions ?? {}), options: body.options });
+    const role = { id: db.nextId.role++, name, ...access, created_at: now() };
     db.roles.push(role);
+    return roleView(role);
+  }],
+
+  ['POST', /^\/api\/roles\/(\d+)\/copy$/, (match) => {
+    requireAdmin();
+    const source = byId(db.roles, match[1]);
+    if (!source) throw new ApiError(404, 'Роль не найдена');
+    let name = `Копия: ${source.name}`;
+    for (let index = 2; db.roles.some((role) => role.name === name); index += 1) name = `Копия: ${source.name} (${index})`;
+    const role = { ...structuredClone(source), id: db.nextId.role++, name, created_at: now() };
+    db.roles.push(role);
+    return roleView(role);
+  }],
+
+  /** Личный доступ: копия роли сотрудника под его именем, сразу назначенная ему. */
+  ['POST', /^\/api\/roles\/personal$/, (_m, body) => {
+    requireAdmin();
+    const user = byId(db.users, body.user_id);
+    if (!user || user.role !== 'manager') throw new ApiError(404, 'Сотрудник не найден');
+    const current = roleOf(user);
+    const name = `Личная: ${user.name}`;
+    const shared = db.users.filter((item) => item.role_id === current?.id).length;
+    if (current?.name === name && shared <= 1) return roleView(current);
+    const role = { ...structuredClone(current ?? {}), id: db.nextId.role++, name, created_at: now() };
+    db.roles.push(role);
+    user.role_id = role.id;
     return roleView(role);
   }],
 
@@ -589,7 +713,11 @@ const ROUTES = [
     const role = byId(db.roles, match[1]);
     if (!role) throw new ApiError(404, 'Роль не найдена');
     if (body.name) role.name = String(body.name).trim();
-    if (body.permissions) role.permissions = normalizePermissions(body.permissions);
+    if (body.permissions || body.options) {
+      Object.assign(role, normalizeRole({
+        ...(body.permissions ?? role.permissions), options: body.options ?? role.options,
+      }));
+    }
     return roleView(role);
   }],
 
@@ -823,6 +951,7 @@ const ROUTES = [
   }],
 
   ['POST', /^\/api\/deals$/, (_m, body) => {
+    assertAccess('deals', 'create');
     const title = required(body, 'title');
     if (title.length < 2) throw new ApiError(400, 'Ошибка валидации', { title: 'Минимум 2 символов' });
     const owner = assignable('deals', body.owner_id ? Number(body.owner_id) : session.id);
@@ -883,7 +1012,7 @@ const ROUTES = [
   }],
 
   ['PATCH', /^\/api\/deals\/(\d+)$/, (match, body) => {
-    const deal = visible('deals', match[1], 'Сделка не найдена');
+    const deal = visible('deals', match[1], 'Сделка не найдена', 'edit');
     linkedCity(body);
     const owner = body.owner_id ? assignable('deals', body.owner_id) : null;
     // Город меняет администратор; смена ответственного переносит сделку в его город.
@@ -925,8 +1054,15 @@ const ROUTES = [
     return dealView(deal);
   }],
 
+  /** Взять свободную заявку в работу. */
+  ['POST', /^\/api\/deals\/(\d+)\/take$/, (match) => {
+    const deal = visible('deals', match[1], 'Сделка не найдена');
+    takeDeal(deal);
+    return dealView(deal);
+  }],
+
   ['DELETE', /^\/api\/deals\/(\d+)$/, (match) => {
-    const id = visible('deals', match[1], 'Сделка не найдена').id;
+    const id = visible('deals', match[1], 'Сделка не найдена', 'delete').id;
     db.deals = db.deals.filter((deal) => deal.id !== id);
     db.dealTags = db.dealTags.filter((link) => link.deal_id !== id);
     db.tasks = db.tasks.filter((task) => task.deal_id !== id);
@@ -979,6 +1115,7 @@ const ROUTES = [
   }],
 
   ['POST', /^\/api\/contacts$/, (_m, body) => {
+    assertAccess('contacts', 'create');
     const contact = {
       id: db.nextId.contact++,
       first_name: required(body, 'first_name'),
@@ -1001,7 +1138,7 @@ const ROUTES = [
   }],
 
   ['PATCH', /^\/api\/contacts\/(\d+)$/, (match, body) => {
-    const contact = visible('contacts', match[1], 'Контакт не найден');
+    const contact = visible('contacts', match[1], 'Контакт не найден', 'edit');
     for (const field of ['first_name', 'last_name', 'email', 'phone', 'position', 'notes']) {
       if (Object.hasOwn(body, field)) contact[field] = body[field];
     }
@@ -1013,7 +1150,7 @@ const ROUTES = [
   }],
 
   ['DELETE', /^\/api\/contacts\/(\d+)$/, (match) => {
-    visible('contacts', match[1], 'Контакт не найден');
+    visible('contacts', match[1], 'Контакт не найден', 'delete');
     db.contacts = db.contacts.filter((contact) => contact.id !== Number(match[1]));
     return null;
   }],
@@ -1037,6 +1174,7 @@ const ROUTES = [
   }],
 
   ['POST', /^\/api\/companies$/, (_m, body) => {
+    assertAccess('companies', 'create');
     const company = {
       id: db.nextId.company++,
       name: required(body, 'name'),
@@ -1054,7 +1192,7 @@ const ROUTES = [
   }],
 
   ['PATCH', /^\/api\/companies\/(\d+)$/, (match, body) => {
-    const company = visible('companies', match[1], 'Компания не найдена');
+    const company = visible('companies', match[1], 'Компания не найдена', 'edit');
     for (const field of ['name', 'industry', 'website', 'phone', 'address', 'notes']) {
       if (Object.hasOwn(body, field)) company[field] = body[field];
     }
@@ -1064,7 +1202,7 @@ const ROUTES = [
   }],
 
   ['DELETE', /^\/api\/companies\/(\d+)$/, (match) => {
-    visible('companies', match[1], 'Компания не найдена');
+    visible('companies', match[1], 'Компания не найдена', 'delete');
     db.companies = db.companies.filter((company) => company.id !== Number(match[1]));
     return null;
   }],
@@ -1085,6 +1223,7 @@ const ROUTES = [
   }],
 
   ['POST', /^\/api\/tasks$/, (_m, body) => {
+    assertAccess('tasks', 'create');
     const task = {
       id: db.nextId.task++,
       title: required(body, 'title'),
@@ -1108,7 +1247,7 @@ const ROUTES = [
   }],
 
   ['PATCH', /^\/api\/tasks\/(\d+)$/, (match, body) => {
-    const task = visible('tasks', match[1], 'Задача не найдена');
+    const task = visible('tasks', match[1], 'Задача не найдена', 'edit');
     linkedCity(body);
     for (const field of ['title', 'description', 'due_date', 'priority']) {
       if (Object.hasOwn(body, field)) task[field] = body[field];
@@ -1122,7 +1261,7 @@ const ROUTES = [
   }],
 
   ['DELETE', /^\/api\/tasks\/(\d+)$/, (match) => {
-    visible('tasks', match[1], 'Задача не найдена');
+    visible('tasks', match[1], 'Задача не найдена', 'delete');
     db.tasks = db.tasks.filter((task) => task.id !== Number(match[1]));
     return null;
   }],
@@ -1151,7 +1290,7 @@ const ROUTES = [
       throw new ApiError(400, 'Укажите, к чему относится запись: компания, контакт или сделка');
     }
     linkedCity(activity);
-    assertAccess(parentSection(activity), 'edit');
+    visible(parentSection(activity), parentId(activity), 'Запись не найдена', 'edit');
     db.activities.push(activity);
     return activityView(activity);
   }],
@@ -1210,6 +1349,7 @@ const ROUTES = [
   }],
 
   ['POST', /^\/api\/products$/, (_m, body) => {
+    assertAccess('products', 'create');
     const product = {
       id: db.nextId.product++,
       sku: body.sku ?? null,
@@ -1250,7 +1390,7 @@ const ROUTES = [
   })],
 
   ['POST', /^\/api\/deals\/(\d+)\/items$/, (match, body) => {
-    const dealId = visible('deals', match[1], 'Сделка не найдена').id;
+    const dealId = visible('deals', match[1], 'Сделка не найдена', 'edit').id;
     const product = body.product_id ? byId(db.products, body.product_id) : null;
     const name = body.name ?? product?.name;
     if (!name) throw new ApiError(400, 'Ошибка валидации', { name: 'Укажите товар' });
@@ -1264,7 +1404,7 @@ const ROUTES = [
   }],
 
   ['DELETE', /^\/api\/deals\/(\d+)\/items\/(\d+)$/, (match) => {
-    const dealId = visible('deals', match[1], 'Сделка не найдена').id;
+    const dealId = visible('deals', match[1], 'Сделка не найдена', 'edit').id;
     db.dealItems = db.dealItems.filter((item) => item.id !== Number(match[2]));
     return { items: itemsOf(dealId), amount: syncDealAmount(dealId) };
   }],
@@ -1311,6 +1451,7 @@ const ROUTES = [
   }],
 
   ['POST', /^\/api\/calls$/, (_m, body) => {
+    assertAccess('calls', 'create');
     const call = {
       id: db.nextId.call++,
       direction: body.direction ?? 'out',
@@ -1413,6 +1554,7 @@ const ROUTES = [
   }],
 
   ['POST', /^\/api\/chats$/, (_m, body) => {
+    assertAccess('chats', 'create');
     // Писать можно только с номеров своего города (администратор — с любого).
     const available = db.channels.filter(channelsIn());
     const channel = body.channel_id ? available.find((item) => item.id === Number(body.channel_id)) : available[0];
@@ -1430,7 +1572,10 @@ const ROUTES = [
   }],
 
   ['POST', /^\/api\/chats\/(\d+)\/messages$/, (match, body) => {
-    const chat = visible('chats', match[1], 'Переписка не найдена');
+    const chat = visible('chats', match[1], 'Переписка не найдена', 'edit');
+    // Ответил в свободной переписке — значит взял заявку себе.
+    const chatDeal = byId(db.deals, chat.deal_id);
+    if (chatDeal && !isAdmin()) takeDeal(chatDeal);
 
     const message = {
       id: db.nextId.message++, chat_id: chat.id, direction: 'out',
@@ -1466,6 +1611,7 @@ const ROUTES = [
   }],
 
   ['POST', /^\/api\/emails$/, (_m, body) => {
+    assertAccess('emails', 'create');
     const email = {
       id: db.nextId.email++, direction: 'out',
       subject: required(body, 'subject'), body: required(body, 'body'),
@@ -1482,7 +1628,7 @@ const ROUTES = [
   }],
 
   ['DELETE', /^\/api\/emails\/(\d+)$/, (match) => {
-    visible('emails', match[1], 'Письмо не найдено');
+    visible('emails', match[1], 'Письмо не найдено', 'delete');
     db.emails = db.emails.filter((email) => email.id !== Number(match[1]));
     return null;
   }],
@@ -1584,6 +1730,7 @@ const ROUTES = [
 
 function handle(method, path, body, params) {
   guard(method, path);
+  if (session) stripClosedFields(userView(session), method, body);
   for (const [routeMethod, pattern, handler] of ROUTES) {
     if (routeMethod !== method) continue;
     const match = pattern.exec(path);
@@ -1596,7 +1743,9 @@ function handle(method, path, body, params) {
 const respond = (method, path, body, params) => new Promise((resolve, reject) => {
   setTimeout(() => {
     try {
-      resolve(structuredClone(handle(method, path, body, params)));
+      const result = structuredClone(handle(method, path, body, params));
+      const rules = session ? maskRules(userView(session), path) : null;
+      resolve(rules ? maskBody(result, rules) : result);
     } catch (error) {
       reject(error);
     }

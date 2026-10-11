@@ -3,7 +3,7 @@
  * только живут в памяти браузера. Генерируются детерминированно,
  * чтобы у всех, кто открыл ссылку, картинка была одинаковой.
  */
-import { DEFAULT_ROLES, normalizePermissions } from './permissions.js';
+import { DEFAULT_ROLES, normalizeRole } from './permissions.js';
 import { DEFAULT_PIPELINES, buildStages } from './stage-constants.js';
 
 const DAY = 86_400_000;
@@ -33,22 +33,23 @@ const CITIES = [
 // Номер владельца: без города, переписку на нём видит только администратор.
 const OWNER_WHATSAPP = { name: 'WhatsApp владельца', phone: '+7 708 641 9548' };
 
-// Администратор видит всё; остальным права даёт роль (1 — менеджер города, 2 — стажёр,
-// 3 — руководитель: все города, только просмотр). leads — ведёт демо-заявки.
+// Администратор видит всё; остальным права даёт роль (порядок как в DEFAULT_ROLES:
+// 1 — менеджер «свои и свободные заявки», 4 — стажёр, 5 — руководитель всех городов
+// с правом только на просмотр). leads — ведёт демо-заявки.
 // demoLabel — подпись в переключателе «Смотреть как».
 export const USERS = [
   { id: 1, name: 'Жанна', email: 'admin@crm.local', role: 'admin', city_id: null, role_id: null, active: 1,
     demoLabel: 'владелец, всё во всех городах' },
   { id: 2, name: 'Андрей Лукашевич', email: 'andrey@crm.local', role: 'manager', city_id: 1, role_id: 1, active: 1,
-    leads: true, demoLabel: 'менеджер, Минск' },
+    leads: true, demoLabel: 'менеджер Минска: свои и свободные' },
   { id: 3, name: 'Ольга Тихонова', email: 'olga@crm.local', role: 'manager', city_id: 2, role_id: 1, active: 1,
-    leads: true, demoLabel: 'менеджер, Караганда' },
+    leads: true, demoLabel: 'менеджер Караганды: свои и свободные' },
   { id: 4, name: 'Пётр Ковалёв', email: 'petr@crm.local', role: 'manager', city_id: 3, role_id: 1, active: 1,
-    leads: true, demoLabel: 'менеджер, Алматы' },
-  { id: 5, name: 'Айгерим Нурланова', email: 'aigerim@crm.local', role: 'manager', city_id: 3, role_id: 2, active: 1,
-    leads: true, demoLabel: 'стажёр, только свои заявки' },
-  { id: 6, name: 'Марат Сейткали', email: 'marat@crm.local', role: 'manager', city_id: 3, role_id: 3, active: 1,
-    demoLabel: 'руководитель, все города, просмотр' },
+    leads: true, demoLabel: 'менеджер Алматы: свои и свободные' },
+  { id: 5, name: 'Айгерим Нурланова', email: 'aigerim@crm.local', role: 'manager', city_id: 3, role_id: 4, active: 1,
+    leads: true, demoLabel: 'стажёр: только свои, суммы видит без правки' },
+  { id: 6, name: 'Марат Сейткали', email: 'marat@crm.local', role: 'manager', city_id: 3, role_id: 5, active: 1,
+    demoLabel: 'руководитель: все города, только просмотр' },
 ];
 
 const TAGS = [
@@ -168,7 +169,7 @@ export function buildDataset() {
       ...channel, provider: 'none', phone_id: null, api_url: null, has_token: false, active: 1, created_at: stamp(-90, 10),
     })),
     roles: DEFAULT_ROLES.map((role, index) => ({
-      id: index + 1, name: role.name, permissions: normalizePermissions(role.permissions), created_at: stamp(-90, 10),
+      id: index + 1, name: role.name, ...normalizeRole(role.permissions), created_at: stamp(-90, 10),
     })),
     users: USERS.map(({ leads, demoLabel, ...user }) => ({ ...user, created_at: stamp(-90, 10) })),
     tags: TAGS.map((tag, index) => ({
@@ -189,6 +190,13 @@ export function buildDataset() {
     chatMessages: [],
     emails: [],
     events: [],
+    // Журнал входов: несколько обычных входов сотрудников и одна неудачная попытка.
+    authLog: [
+      { id: 1, user_id: 1, email: 'admin@crm.local', ip: '95.56.10.4', success: 1, reason: null, created_at: stamp(-1, 9) },
+      { id: 2, user_id: 4, email: 'petr@crm.local', ip: '95.56.12.7', success: 1, reason: null, created_at: stamp(-1, 10) },
+      { id: 3, user_id: 3, email: 'olga@crm.local', ip: '2.134.5.18', success: 0, reason: 'неверный пароль', created_at: stamp(0, 9) },
+      { id: 4, user_id: 3, email: 'olga@crm.local', ip: '2.134.5.18', success: 1, reason: null, created_at: stamp(0, 9) },
+    ],
     settings: {},
     nextId: {
       company: 1, contact: 1, deal: 1, tag: TAGS.length + 1, task: 1, activity: 1,
@@ -261,6 +269,9 @@ export function buildDataset() {
       ? open[Math.min(progress, open.length - 1)]
       : closingStage(pipeline.id, progress);
     const product = PRODUCTS[Math.floor(rnd() * PRODUCTS.length)];
+    // Часть новых заявок ещё никто не взял — они свободны для менеджеров города.
+    const free = pipeline === state.pipelines[0] && stage === open[0] && index % 3 === 0;
+    if (free) contact.owner_id = null;
     const deal = {
       id: state.nextId.deal++,
       title: pipeline.name === 'Рекламации'
@@ -273,7 +284,7 @@ export function buildDataset() {
       lead_type: 'individual',
       company_id: null,
       contact_id: contact.id,
-      owner_id: ownerFor(index),
+      owner_id: free ? null : ownerFor(index),
       city_id: cityFor(index),
       expected_close_date: dateOnly(dayOffset + 5 + Math.floor(rnd() * 20)),
       closed_at: stage.type === 'open' ? null : createdAt,
@@ -382,12 +393,13 @@ export function buildDataset() {
       last_message_at: stamp(-Math.floor(rnd() * 3), 12 + index),
       created_at: stamp(-5, 10),
     });
-    chat.messages.forEach((message, position) => {
+    // У свободной заявки ещё никто не отвечал — в переписке только сообщения клиента.
+    chat.messages.filter((message) => owner || message.in).forEach((message, position) => {
       state.chatMessages.push({
         id: state.nextId.message++, chat_id: chatId,
         direction: message.in ? 'in' : 'out', body: message.text,
-        author_name: message.in ? chat.title : owner.name,
-        user_id: message.in ? null : owner.id,
+        author_name: message.in ? chat.title : owner?.name,
+        user_id: message.in ? null : owner?.id ?? null,
         external_id: null, status: message.in ? 'received' : 'sent',
         created_at: stamp(-Math.floor(rnd() * 3), 12 + index, position),
       });

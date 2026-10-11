@@ -1,6 +1,6 @@
 import { api } from '../api.js';
 import { store } from '../store.js';
-import { confirmDialog, el, openForm, toast } from '../ui.js';
+import { confirmDialog, el, formatDateTime, openForm, toast } from '../ui.js';
 
 /** Настройки (только администратор): города, сотрудники, номера WhatsApp, почта, AI. */
 export async function renderSettings(root) {
@@ -156,36 +156,109 @@ export async function renderSettings(root) {
     ]);
   };
 
-  /** Роли доступа: по каждому разделу уровень и чьи записи видны — как в EspoCRM. */
+  /**
+   * Роли доступа — как в EspoCRM: по каждому разделу можно ли создавать
+   * и чьи записи смотреть, править и удалять; плюс доступ к полям и выгрузке.
+   */
+  const SCOPE_RANK = ['none', 'own', 'free', 'city', 'all'];
+  const narrower = (a, b) => (SCOPE_RANK.indexOf(a) <= SCOPE_RANK.indexOf(b) ? a : b);
+
+  // Шаблоны в один клик: дальше любую клетку можно поменять вручную.
+  const PRESETS = [
+    { label: 'Только просмотр своего города', make: () => ({ create: false, read: 'city', edit: 'none', delete: 'none' }) },
+    { label: 'Свои и свободные заявки', make: () => ({ create: true, read: 'free', edit: 'own', delete: 'none' }) },
+    { label: 'Весь свой город', make: () => ({ create: true, read: 'city', edit: 'city', delete: 'city' }) },
+    { label: 'Всё во всех городах', make: () => ({ create: true, read: 'all', edit: 'all', delete: 'all' }) },
+  ];
+
   const roleEditor = (role, meta) => {
+    const scopeOptions = (section, value, allowNone = true) => {
+      const options = section.global
+        ? [{ key: 'none', label: 'Нет' }, { key: 'all', label: 'Да' }]
+        : meta.scopes.filter((item) => allowNone || item.key !== 'none');
+      return options.map((item) => el('option', { value: item.key, selected: item.key === value }, item.label));
+    };
+
     const rows = meta.sections.map((section) => {
-      const current = role?.permissions?.[section.key] ?? { level: 'none', scope: 'city' };
-      const level = el('select', { 'aria-label': `${section.label}: доступ` },
-        meta.levels
-          .filter((item) => !section.readOnly || ['none', 'read'].includes(item.key))
-          .map((item) => el('option', { value: item.key, selected: item.key === current.level }, item.label)));
-      const scope = el('select', { 'aria-label': `${section.label}: чьи записи`, disabled: section.global },
-        meta.scopes.map((item) => el('option', { value: item.key, selected: item.key === current.scope }, item.label)));
-      // Без доступа охват не важен — делаем его неактивным, чтобы не путать.
-      const sync = () => { scope.disabled = section.global || level.value === 'none'; };
-      level.addEventListener('change', sync);
+      const current = role?.permissions?.[section.key] ?? { create: false, read: 'none', edit: 'none', delete: 'none' };
+      const create = el('input', { type: 'checkbox', style: 'width:auto', checked: current.create,
+        'aria-label': `${section.label}: создание` });
+      const make = (action) => el('select', { 'aria-label': `${section.label}: ${action}` },
+        scopeOptions(section, current[action]));
+      const read = make('read');
+      const edit = make('edit');
+      const remove = make('delete');
+
+      // Править и удалять — не шире, чем видно; без просмотра и создавать нечего.
+      const sync = () => {
+        edit.value = narrower(edit.value, read.value);
+        remove.value = narrower(remove.value, read.value);
+        create.disabled = read.value === 'none';
+        if (create.disabled) create.checked = false;
+      };
+      for (const control of [read, edit, remove]) control.addEventListener('change', sync);
       sync();
-      return { section, level, scope };
+
+      const set = (values) => {
+        read.value = section.global && values.read !== 'none' ? 'all' : values.read;
+        edit.value = section.global && values.edit !== 'none' ? 'all' : values.edit;
+        remove.value = section.global && values.delete !== 'none' ? 'all' : values.delete;
+        create.checked = values.create;
+        sync();
+      };
+      return { section, create, read, edit, remove, set };
     });
 
+    const options = role?.options ?? { amounts: 'edit', contacts: 'edit', export: false, assign: 'own' };
+    const pick = (list, value, label) => el('select', { 'aria-label': label },
+      list.map((item) => el('option', { value: item.key, selected: item.key === value }, item.label)));
+    const amounts = pick(meta.fieldLevels, options.amounts, 'Суммы');
+    const contacts = pick(meta.fieldLevels, options.contacts, 'Контакты клиентов');
+    const assign = pick(meta.assignScopes, options.assign, 'Кого назначать ответственным');
+    const exportAllowed = el('input', { type: 'checkbox', style: 'width:auto', checked: options.export });
+
+    const cell = (row, control) => (row.section.readOnly && control !== row.read ? el('span', { class: 'muted', text: '—' }) : control);
+
     return {
-      node: el('div', { class: 'table-wrap' }, el('table', { class: 'role-matrix' }, [
-        el('thead', {}, [el('tr', {}, ['Раздел', 'Что можно делать', 'Чьи записи видны']
-          .map((title) => el('th', { text: title })))]),
-        el('tbody', {}, rows.map(({ section, level, scope }) => el('tr', {}, [
-          el('td', {}, el('strong', { text: section.label })),
-          el('td', {}, level),
-          el('td', {}, section.global ? el('span', { class: 'muted', text: 'общий каталог' }) : scope),
-        ]))),
-      ])),
-      read: () => Object.fromEntries(rows.map(({ section, level, scope }) => [
-        section.key, { level: level.value, scope: scope.value },
-      ])),
+      node: el('div', { style: 'display:grid;gap:14px' }, [
+        el('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;align-items:center' }, [
+          el('span', { class: 'muted', text: 'Шаблон для всех разделов:' }),
+          ...PRESETS.map((preset) => el('button', {
+            type: 'button', class: 'btn chip',
+            onclick: () => rows.forEach((row) => row.set(row.section.readOnly
+              ? { ...preset.make(), create: false, edit: 'none', delete: 'none' }
+              : preset.make())),
+          }, preset.label)),
+        ]),
+        el('div', { class: 'table-wrap' }, el('table', { class: 'role-matrix' }, [
+          el('thead', {}, [el('tr', {}, ['Раздел', 'Создание', 'Просмотр', 'Правка', 'Удаление']
+            .map((title) => el('th', { text: title })))]),
+          el('tbody', {}, rows.map((row) => el('tr', {}, [
+            el('td', {}, el('strong', { text: row.section.label })),
+            el('td', {}, cell(row, row.create)),
+            el('td', {}, row.read),
+            el('td', {}, cell(row, row.edit)),
+            el('td', {}, cell(row, row.remove)),
+          ]))),
+        ])),
+        el('div', { class: 'muted', style: 'font-size:12px' },
+          '«Свои + свободные города» — свои записи и новые заявки города без ответственного: их видят все такие менеджеры, кто взял — тот и ведёт.'),
+        el('div', { class: 'fields-row' }, [
+          el('div', { class: 'field' }, [el('label', { text: meta.fieldGroups[0].label }), amounts]),
+          el('div', { class: 'field' }, [el('label', { text: meta.fieldGroups[1].label }), contacts]),
+          el('div', { class: 'field' }, [el('label', { text: 'Кого можно назначать ответственным' }), assign]),
+          el('label', { class: 'field', style: 'display:flex;gap:8px;align-items:center;margin-top:18px' },
+            [exportAllowed, 'Может выгружать отчёты в CSV']),
+        ]),
+      ]),
+      read: () => ({
+        permissions: Object.fromEntries(rows.map((row) => [row.section.key, {
+          create: row.create.checked, read: row.read.value, edit: row.edit.value, delete: row.remove.value,
+        }])),
+        options: {
+          amounts: amounts.value, contacts: contacts.value, assign: assign.value, export: exportAllowed.checked,
+        },
+      }),
     };
   };
 
@@ -195,11 +268,12 @@ export async function renderSettings(root) {
       title: role ? `Роль — ${role.name}` : 'Новая роль',
       fields: [
         { name: 'name', label: 'Название роли', required: true, value: role?.name, width: 'full' },
-        { name: 'permissions', type: 'custom', width: 'full', node: matrix.node, read: matrix.read },
+        { name: 'access', type: 'custom', width: 'full', node: matrix.node, read: matrix.read },
       ],
-      onSubmit: async (values) => {
-        if (role) await api.patch(`/api/roles/${role.id}`, values);
-        else await api.post('/api/roles', values);
+      onSubmit: async ({ name, access }) => {
+        const payload = { name, ...access };
+        if (role) await api.patch(`/api/roles/${role.id}`, payload);
+        else await api.post('/api/roles', payload);
         toast(role ? 'Права роли сохранены — действуют сразу' : 'Роль создана');
         await reload();
       },
@@ -212,7 +286,7 @@ export async function renderSettings(root) {
       el('button', { class: 'btn', onclick: () => roleForm(null, roles) }, '+ Роль'),
     ]),
     el('div', { class: 'card-body', style: 'display:grid;gap:12px' }, [
-      el('div', { class: 'muted', text: 'Роль задаёт для каждого раздела, что сотрудник может делать (нет доступа, только просмотр, просмотр и правка или полный — с удалением) и чьи записи ему видны (только свои, своего города или всех городов). Роль назначается сотруднику ниже.' }),
+      el('div', { class: 'muted', text: 'Роль задаёт по каждому разделу, можно ли создавать записи и чьи записи сотрудник может смотреть, править и удалять: свои, свои и свободные заявки города, весь город или все города. Ещё — можно ли видеть суммы и контакты клиентов и выгружать отчёты. Роль назначается сотруднику ниже; для одного сотрудника можно настроить личный доступ.' }),
       el('div', { class: 'table-wrap' }, el('table', {}, [
         el('thead', {}, [el('tr', {}, ['Роль', 'Кратко', 'Сотрудников', '']
           .map((title, index) => el('th', { class: index === 2 ? 'num' : '', text: title })))]),
@@ -222,6 +296,16 @@ export async function renderSettings(root) {
           el('td', { class: 'num', text: String(role.users_count) }),
           el('td', { class: 'actions' }, [
             el('button', { class: 'btn ghost', title: 'Настроить права', onclick: () => roleForm(role, roles) }, '✎'),
+            el('button', { class: 'btn ghost', title: 'Сделать копию', onclick: async () => {
+              try {
+                const copy = await api.post(`/api/roles/${role.id}/copy`, {});
+                toast(`Создана «${copy.name}»`);
+                await reload();
+                roleForm(copy, roles);
+              } catch (error) {
+                toast(error.message, 'error');
+              }
+            } }, '⧉'),
             el('button', { class: 'btn ghost', title: 'Удалить роль', onclick: async () => {
               if (!await confirmDialog(`Удалить роль «${role.name}»?`)) return;
               run(() => api.delete(`/api/roles/${role.id}`), 'Роль удалена');
@@ -232,15 +316,19 @@ export async function renderSettings(root) {
     ]),
   ]);
 
-  /** «Сделки: редактирование, свой город · Почта: нет доступа…» — коротко по разделам. */
+  /** Коротко: что со сделками, что закрыто, что со скрытыми полями и выгрузкой. */
   const roleSummary = (role, meta) => {
-    const short = { none: 'нет', read: 'просмотр', edit: 'правка', full: 'полный' };
-    const scopes = { own: 'свои', city: 'город', all: 'все города' };
-    return meta.sections.map((section) => {
-      const access = role.permissions[section.key];
-      const scope = access.level === 'none' || section.global ? '' : `, ${scopes[access.scope]}`;
-      return `${section.label}: ${short[access.level]}${scope}`;
-    }).join(' · ');
+    const scopes = { none: 'нет', own: 'свои', free: 'свои и свободные', city: 'весь город', all: 'все города' };
+    const deals = role.permissions.deals;
+    const parts = [
+      `Сделки: видит ${scopes[deals.read]}, правит ${scopes[deals.edit]}${deals.delete !== 'none' ? `, удаляет ${scopes[deals.delete]}` : ''}`,
+    ];
+    const closed = meta.sections.filter((section) => role.permissions[section.key].read === 'none').map((section) => section.label);
+    if (closed.length) parts.push(`нет доступа: ${closed.join(', ')}`);
+    if (role.options.amounts === 'hidden') parts.push('суммы скрыты');
+    if (role.options.contacts === 'hidden') parts.push('контакты клиентов скрыты');
+    parts.push(role.options.export ? 'выгрузка разрешена' : 'без выгрузки');
+    return parts.join(' · ');
   };
 
   /** Сотрудники: роль доступа и город определяют, что человек видит. */
@@ -278,6 +366,30 @@ export async function renderSettings(root) {
     },
   });
 
+  /** Личный доступ: копия роли сотрудника под его именем — настраивается, не задевая коллег. */
+  const personalAccess = async (user, roles) => {
+    try {
+      const role = await api.post('/api/roles/personal', { user_id: user.id });
+      await reload();
+      roleForm(role, roles);
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  };
+
+  /** Войти как сотрудник — проверить, что он видит. Вернуться — кнопкой в шапке. */
+  const loginAs = async (user) => {
+    if (!await confirmDialog(`Открыть CRM глазами сотрудника «${user.name}»? Вернуться к себе можно кнопкой вверху страницы.`,
+      { confirmLabel: 'Войти как сотрудник', danger: false })) return;
+    try {
+      await api.post(`/api/users/${user.id}/login-as`, {});
+      location.hash = '#/deals';
+      location.reload();
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  };
+
   const usersCard = (users, cities, roles) => el('div', { class: 'card' }, [
     el('div', { class: 'card-head' }, [
       'Сотрудники',
@@ -292,8 +404,35 @@ export async function renderSettings(root) {
         el('td', { text: user.role === 'admin' ? ADMIN_LABEL : (user.role_name ?? 'роль не назначена — нет доступа') }),
         el('td', { text: user.role === 'admin' ? 'все города' : (user.city_name ?? '— не выбран —') }),
         el('td', { text: user.active ? 'активен' : 'отключён' }),
-        el('td', { class: 'actions' }, el('button', { class: 'btn ghost', onclick: () => userForm(user, cities, roles) }, '✎')),
+        el('td', { class: 'actions' }, [
+          el('button', { class: 'btn ghost', title: 'Изменить', onclick: () => userForm(user, cities, roles) }, '✎'),
+          user.role !== 'admin'
+            ? el('button', { class: 'btn ghost', title: 'Личный доступ — настроить права только этому сотруднику',
+                onclick: () => personalAccess(user, roles) }, '🔑')
+            : null,
+          user.role !== 'admin' && user.active
+            ? el('button', { class: 'btn ghost', title: 'Войти как сотрудник — посмотреть его глазами',
+                onclick: () => loginAs(user) }, '👁')
+            : null,
+        ]),
       ]))),
+    ])),
+  ]);
+
+  /** Журнал входов: кто, когда и откуда входил, неудачные попытки. */
+  const authLogCard = (log) => el('div', { class: 'card' }, [
+    el('div', { class: 'card-head' }, ['Журнал входов', el('span', { class: 'muted', style: 'font-weight:400', text: 'последние 200' })]),
+    el('div', { class: 'table-wrap', style: 'max-height:340px;overflow:auto' }, el('table', {}, [
+      el('thead', {}, [el('tr', {}, ['Когда', 'Сотрудник', 'Результат', 'IP'].map((title) => el('th', { text: title })))]),
+      el('tbody', {}, log.items.length ? log.items.map((entry) => el('tr', {}, [
+        el('td', { class: 'muted', text: formatDateTime(entry.created_at) }),
+        el('td', { text: entry.user_name ?? entry.email ?? '—' }),
+        el('td', {}, el('span', {
+          class: entry.success ? 'badge' : 'badge prio-high',
+          text: entry.success ? (entry.reason ?? 'вход') : `не вошёл: ${entry.reason ?? 'ошибка'}`,
+        })),
+        el('td', { class: 'muted', text: entry.ip ?? '—' }),
+      ])) : [el('tr', {}, [el('td', { colspan: '4' }, el('div', { class: 'empty', text: 'Входов пока не было' }))])]),
     ])),
   ]);
 
@@ -409,8 +548,9 @@ export async function renderSettings(root) {
   ]);
 
   async function reload() {
-    const [data, users, cities, channels, roles] = await Promise.all([
+    const [data, users, cities, channels, roles, log] = await Promise.all([
       api.get('/api/settings'), store.users(), store.cities(true), api.get('/api/channels'), api.get('/api/roles'),
+      api.get('/api/users/auth-log'),
     ]);
     const { settings, channels: status, webhooks } = data;
 
@@ -418,6 +558,7 @@ export async function renderSettings(root) {
       citiesCard(cities),
       rolesCard(roles),
       usersCard(users, cities, roles),
+      authLogCard(log),
       channelsCard(channels.items, cities),
 
       section('Почта (SMTP)', 'Исходящие письма уходят с этого ящика; входящие принимает вебхук почтового сервиса.',
